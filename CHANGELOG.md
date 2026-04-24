@@ -1,5 +1,10 @@
 # Changelog
 
+## v6.8.1 - 2026-04-24
+
+### Refactors
+- update Codex client with new UA and image generation tool (b9f620d, SmallMain)
+
 ## v6.8.0 - 2026-04-24
 
 ### Features
