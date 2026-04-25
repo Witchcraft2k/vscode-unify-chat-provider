@@ -710,7 +710,7 @@ const _WELL_KNOWN_MODELS = [
   {
     id: 'gpt-5.5',
     name: 'GPT-5.5',
-    maxInputTokens: 400000,
+    maxInputTokens: 1050000,
     maxOutputTokens: 128000,
     stream: true,
     tokenizer: 'openai',
