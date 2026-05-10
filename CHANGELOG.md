@@ -1,5 +1,10 @@
 # Changelog
 
+## v6.9.2 - 2026-05-10
+
+### Refactors
+- replace hard extension dependency with opportunistic activation (dc820b9, SmallMain)
+
 ## v6.9.1 - 2026-05-07
 
 ### Refactors
