@@ -46,6 +46,8 @@ type Section = {
   commits: Commit[];
 };
 
+const MARKETPLACE_PUBLISH_ATTEMPTS = 4;
+
 const { values } = parseArgs({
   options: {
     'dry-run': { type: 'boolean' },
@@ -221,12 +223,7 @@ async function main(): Promise<void> {
   await runInherit(repoRoot, 'vsce', ['package', '--out', vsixPath]);
 
   if (!skipPublish) {
-    await runInherit(repoRoot, 'vsce', [
-      'publish',
-      '--packagePath',
-      vsixPath,
-      '--allow-all-proposed-apis',
-    ]);
+    await publishToMarketplace(repoRoot, vsixPath);
   }
 
   // Create git tag after successful packaging/publishing to avoid manual cleanup on failure
@@ -682,6 +679,60 @@ async function ensureGitTag(cwd: string, tagName: string): Promise<void> {
   await runInherit(cwd, 'git', ['tag', '-a', tagName, '-m', tagName]);
 }
 
+async function publishToMarketplace(
+  repoRoot: string,
+  vsixPath: string,
+): Promise<void> {
+  const args = [
+    'publish',
+    '--packagePath',
+    vsixPath,
+    '--allow-all-proposed-apis',
+  ];
+
+  await retry(
+    MARKETPLACE_PUBLISH_ATTEMPTS,
+    async () => {
+      const result = await runInheritCaptureWithCode(repoRoot, 'vsce', args);
+      if (result.code === 0) {
+        return;
+      }
+
+      const output = `${result.stderr}\n${result.stdout}`;
+      if (isMarketplaceAlreadyPublishedError(output)) {
+        console.warn(
+          'VS Code Marketplace already has this extension version; treating publish as complete.',
+        );
+        return;
+      }
+
+      throw new Error(
+        `vsce ${args.join(' ')} failed (${String(result.code)})`,
+      );
+    },
+    (attempt, error) => {
+      console.warn(
+        `VS Code Marketplace publish failed (attempt ${attempt}/${MARKETPLACE_PUBLISH_ATTEMPTS}): ${formatError(
+          error,
+        )}`,
+      );
+      console.warn(
+        'Tip: Marketplace publishing can fail on transient /_apis/gallery timeouts; the release script will retry before continuing.',
+      );
+    },
+  );
+}
+
+function isMarketplaceAlreadyPublishedError(output: string): boolean {
+  const normalized = output.toLowerCase();
+  return (
+    normalized.includes('already exists') ||
+    normalized.includes('version already exists') ||
+    normalized.includes('this extension version has already been published') ||
+    normalized.includes('a version of this extension already exists')
+  );
+}
+
 async function runGitHubFromTagMode(params: {
   repoRoot: string;
   extensionName: string;
@@ -791,7 +842,7 @@ function normalizeGitTag(input: string): string {
   }
   const semver = parseSemver(trimmed);
   if (semver) {
-    return `v${toSemverString(semver)}`;
+    return `v${formatSemver(semver)}`;
   }
   return trimmed;
 }
@@ -963,12 +1014,13 @@ async function publishGitHubRelease(params: {
     if (!uploadUrlTemplate) {
       throw new Error('Missing GitHub release upload URL.');
     }
+    const uploadUrl = uploadUrlTemplate;
 
     await retry(
       3,
       async () => {
         await uploadGitHubReleaseAsset({
-          uploadUrlTemplate,
+          uploadUrlTemplate: uploadUrl,
           token,
           assetPath: params.assetPath,
         });
@@ -1319,6 +1371,56 @@ async function runCaptureWithCode(
 
     child.on('error', reject);
     child.on('close', (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
+
+async function runInheritCaptureWithCode(
+  cwd: string,
+  command: string,
+  args: string[],
+  options?: { env?: NodeJS.ProcessEnv },
+): Promise<RunResultWithCode> {
+  return new Promise((resolve, reject) => {
+    const wasPaused =
+      process.stdin.isTTY && typeof process.stdin.isPaused === 'function'
+        ? process.stdin.isPaused()
+        : false;
+    if (process.stdin.isTTY && !wasPaused) {
+      process.stdin.pause();
+    }
+
+    const child = spawn(command, args, {
+      cwd,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: options?.env ?? process.env,
+    });
+
+    let stdout = '';
+    let stderr = '';
+
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      process.stdout.write(chunk);
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      process.stderr.write(chunk);
+    });
+
+    child.on('error', (error) => {
+      if (process.stdin.isTTY && !wasPaused) {
+        process.stdin.resume();
+      }
+      reject(error);
+    });
+    child.on('close', (code) => {
+      if (process.stdin.isTTY && !wasPaused) {
+        process.stdin.resume();
+      }
       resolve({ code, stdout, stderr });
     });
   });

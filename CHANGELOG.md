@@ -1,5 +1,13 @@
 # Changelog
 
+## v6.9.3 - 2026-05-27
+
+### Fixes
+- handle non-array output in OpenAI responses gracefully (1e60445, SmallMain)
+
+### Chores
+- add VS Code Marketplace retry and detect already-published version (7ba4c5d, SmallMain)
+
 ## v6.9.2 - 2026-05-10
 
 ### Refactors
