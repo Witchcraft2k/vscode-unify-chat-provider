@@ -20,6 +20,7 @@ import {
   DEFAULT_CHAT_RETRY_CONFIG,
   describeNetworkError,
   isAbortLikeError,
+  isRetryableNetworkError,
   isRetryableStatusCode,
   resolveChatNetwork,
   sanitizeMessagesForModelSwitch,
@@ -194,65 +195,6 @@ function calculateBackoffDelay(
   const jitterRange = cappedDelay * config.jitterFactor;
   const jitter = (Math.random() * 2 - 1) * jitterRange;
   return Math.round(cappedDelay + jitter);
-}
-
-function isRetryableNetworkError(error: unknown): boolean {
-  const retryableCodes = new Set<string>([
-    'ECONNRESET',
-    'ETIMEDOUT',
-    'ECONNREFUSED',
-    'EAI_AGAIN',
-    'ENOTFOUND',
-    // undici / fetch (Node) internal error codes
-    'UND_ERR_CONNECT_TIMEOUT',
-    'UND_ERR_HEADERS_TIMEOUT',
-    'UND_ERR_BODY_TIMEOUT',
-    'UND_ERR_SOCKET',
-  ]);
-
-  const hasCause = (value: unknown): value is { cause: unknown } =>
-    typeof value === 'object' && value !== null && 'cause' in value;
-
-  const tryGetErrorCode = (value: unknown): string | undefined => {
-    if (typeof value !== 'object' || value === null) {
-      return undefined;
-    }
-    if (!('code' in value)) {
-      return undefined;
-    }
-    const code = (value as { code: unknown }).code;
-    return typeof code === 'string' ? code : undefined;
-  };
-
-  if (!error) {
-    return false;
-  }
-
-  const directCode = tryGetErrorCode(error);
-  if (directCode && retryableCodes.has(directCode)) {
-    return true;
-  }
-
-  if (hasCause(error)) {
-    const causeCode = tryGetErrorCode(error.cause);
-    if (causeCode && retryableCodes.has(causeCode)) {
-      return true;
-    }
-  }
-
-  if (error instanceof Error) {
-    const message = error.message.toLowerCase();
-    if (
-      message.includes('connection timeout') ||
-      message.includes('fetch failed') ||
-      message.includes('network error') ||
-      message.includes('socket hang up')
-    ) {
-      return true;
-    }
-  }
-
-  return false;
 }
 
 function hashConversationSeed(seed: string): string {
@@ -875,6 +817,14 @@ const CODE_ASSIST_MULTI_ENDPOINT_RETRY_CONFIG: RetryConfig = {
   maxRetries: 3,
   initialDelayMs: 500,
   maxDelayMs: 5000,
+  backoffMultiplier: 2,
+  jitterFactor: 0.1,
+};
+
+const CODE_ASSIST_PRE_FIRST_PART_STREAM_RETRY_CONFIG: Required<RetryConfig> = {
+  maxRetries: 3,
+  initialDelayMs: 1000,
+  maxDelayMs: 10000,
   backoffMultiplier: 2,
   jitterFactor: 0.1,
 };
@@ -2174,102 +2124,165 @@ export abstract class GoogleCodeAssistProvider extends GoogleAIStudioProvider {
         return lastResponse!;
       };
 
-      let response: Response | undefined;
-      let responseEndpointBase: string | undefined;
-      let lastError: Error | undefined;
+      const fetchAttemptResponse = async (): Promise<
+        | {
+            response: Response;
+            responseEndpointBase: string;
+          }
+        | undefined
+      > => {
+        let lastError: Error | undefined;
 
-      // Try each endpoint in sequence
-      for (let i = 0; i < endpointBases.length; i++) {
-        if (abortController.signal.aborted) {
-          return;
-        }
+        // Try each endpoint in sequence
+        for (let i = 0; i < endpointBases.length; i++) {
+          if (abortController.signal.aborted) {
+            return undefined;
+          }
 
-        const endpointBase = endpointBases[i];
-        const endpoint = `${endpointBase}/v1internal:${streamEnabled ? 'streamGenerateContent' : 'generateContent'}${streamEnabled ? '?alt=sse' : ''}`;
+          const endpointBase = endpointBases[i];
+          const endpoint = `${endpointBase}/v1internal:${streamEnabled ? 'streamGenerateContent' : 'generateContent'}${streamEnabled ? '?alt=sse' : ''}`;
 
-        try {
-          const attemptResponse = await fetchWithRetryInfo(endpoint, {
-            method: 'POST',
-            headers,
-            body: JSON.stringify(body),
-            signal: abortController.signal,
-          });
+          try {
+            const attemptResponse = await fetchWithRetryInfo(endpoint, {
+              method: 'POST',
+              headers,
+              body: JSON.stringify(body),
+              signal: abortController.signal,
+            });
 
-          // Check if we should try the next endpoint
-          const shouldRetryEndpoint =
-            attemptResponse.status === 403 ||
-            attemptResponse.status === 404 ||
-            attemptResponse.status >= 500;
+            // Check if we should try the next endpoint
+            const shouldRetryEndpoint =
+              attemptResponse.status === 403 ||
+              attemptResponse.status === 404 ||
+              attemptResponse.status >= 500;
 
-          if (!attemptResponse.ok) {
-            if (shouldRetryEndpoint && i < endpointBases.length - 1) {
-              await attemptResponse.body?.cancel().catch(() => {});
-              continue;
+            if (!attemptResponse.ok) {
+              if (shouldRetryEndpoint && i < endpointBases.length - 1) {
+                await attemptResponse.body?.cancel().catch(() => {});
+                continue;
+              }
+
+              const text = await attemptResponse.text().catch(() => '');
+              const debugProjectIdValue = body['project'];
+              const debugProjectId =
+                typeof debugProjectIdValue === 'string'
+                  ? debugProjectIdValue.trim()
+                  : '';
+              const projectInfo = debugProjectId
+                ? ` (project: ${debugProjectId})`
+                : '';
+              lastError = new Error(
+                `${this.codeAssistName} request failed (${attemptResponse.status})${projectInfo}: ${
+                  text || attemptResponse.statusText || 'Unknown error'
+                }`,
+              );
+              break;
             }
 
-            const text = await attemptResponse.text().catch(() => '');
-            const debugProjectIdValue = body['project'];
-            const debugProjectId =
-              typeof debugProjectIdValue === 'string'
-                ? debugProjectIdValue.trim()
-                : '';
-            const projectInfo = debugProjectId
-              ? ` (project: ${debugProjectId})`
-              : '';
-            lastError = new Error(
-              `${this.codeAssistName} request failed (${attemptResponse.status})${projectInfo}: ${
-                text || attemptResponse.statusText || 'Unknown error'
-              }`,
-            );
-            break;
-          }
+            return {
+              response: attemptResponse,
+              responseEndpointBase: endpointBase,
+            };
+          } catch (error) {
+            if (abortController.signal.aborted) {
+              return undefined;
+            }
 
-          response = attemptResponse;
-          responseEndpointBase = endpointBase;
-          break;
-        } catch (error) {
-          if (abortController.signal.aborted) {
-            return;
-          }
-
-          lastError = error instanceof Error ? error : new Error(String(error));
-          // Try next endpoint if available
-          if (i < endpointBases.length - 1) {
-            continue;
+            lastError =
+              error instanceof Error ? error : new Error(String(error));
+            // Try next endpoint if available
+            if (i < endpointBases.length - 1) {
+              continue;
+            }
           }
         }
-      }
 
-      if (!response || !responseEndpointBase) {
         throw (
           lastError ?? new Error(`All ${this.codeAssistName} endpoints failed`)
         );
-      }
-
-      this.activeEndpointBaseUrl = responseEndpointBase;
+      };
 
       if (streamEnabled) {
         const responseTimeoutMs = chatNetwork.timeout.response;
+        let streamRetryAttempt = 0;
 
-        const stream = this.streamAntigravitySse(
-          response,
-          abortController.signal,
-        );
-        const timedStream = withIdleTimeout(
-          stream,
-          responseTimeoutMs,
-          abortController.signal,
-        );
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          let response: Response | undefined;
+          let emittedPartCount = 0;
 
-        yield* this.parseMessageStream(
-          timedStream,
-          token,
-          logger,
-          performanceTrace,
-          expectedIdentity,
-        );
+          try {
+            const attemptResponse = await fetchAttemptResponse();
+            if (!attemptResponse) {
+              return;
+            }
+
+            response = attemptResponse.response;
+            this.activeEndpointBaseUrl = attemptResponse.responseEndpointBase;
+
+            const stream = this.streamAntigravitySse(
+              response,
+              abortController.signal,
+            );
+            const timedStream = withIdleTimeout(
+              stream,
+              responseTimeoutMs,
+              abortController.signal,
+            );
+
+            for await (const part of this.parseMessageStream(
+              timedStream,
+              token,
+              logger,
+              performanceTrace,
+              expectedIdentity,
+            )) {
+              emittedPartCount++;
+              yield part;
+            }
+
+            return;
+          } catch (error) {
+            await response?.body?.cancel().catch(() => {});
+
+            if (
+              response !== undefined &&
+              emittedPartCount === 0 &&
+              !token.isCancellationRequested &&
+              !abortController.signal.aborted &&
+              isRetryableNetworkError(error) &&
+              streamRetryAttempt <
+                CODE_ASSIST_PRE_FIRST_PART_STREAM_RETRY_CONFIG.maxRetries
+            ) {
+              const delayMs = calculateBackoffDelay(
+                streamRetryAttempt,
+                CODE_ASSIST_PRE_FIRST_PART_STREAM_RETRY_CONFIG,
+              );
+              logger.retry(
+                streamRetryAttempt + 1,
+                CODE_ASSIST_PRE_FIRST_PART_STREAM_RETRY_CONFIG.maxRetries,
+                0,
+                delayMs,
+                undefined,
+                describeNetworkError(error),
+              );
+              await delay(delayMs, abortController.signal);
+              streamRetryAttempt++;
+              continue;
+            }
+
+            throw error;
+          }
+        }
       } else {
-        const payload: unknown = await response.json();
+        const attemptResponse = await fetchAttemptResponse();
+        if (!attemptResponse) {
+          return;
+        }
+
+        this.activeEndpointBaseUrl = attemptResponse.responseEndpointBase;
+
+        const payload: unknown = await attemptResponse.response.json();
         const raw = extractAntigravityResponsePayload(payload);
         if (!raw) {
           throw new Error(`Invalid ${this.codeAssistName} response payload`);
