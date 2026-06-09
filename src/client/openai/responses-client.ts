@@ -145,6 +145,11 @@ type ResponseImageGenerationTool = Extract<
   { type: 'image_generation' }
 >;
 
+type ResponseAdditionalToolsInputItem = Extract<
+  ResponseInputItem,
+  { type: 'additional_tools' }
+>;
+
 type OpenAIResponsesHttpRequestContext = OpenAIResponsesRequestContext & {
   continuation: ResponseContinuation | undefined;
   includeResponseIdInMarker: boolean;
@@ -238,6 +243,23 @@ function normalizeMarkerOutputItem(item: ResponseOutputItem): ResponseInputItem 
       return {
         ...item,
         status: item.status === 'failed' ? 'incomplete' : item.status,
+      };
+
+    case 'additional_tools':
+      if (item.role === 'developer') {
+        const inputItem: ResponseAdditionalToolsInputItem = {
+          id: item.id,
+          role: item.role,
+          tools: item.tools,
+          type: item.type,
+        };
+        return inputItem;
+      }
+
+      return {
+        role: 'developer',
+        tools: item.tools,
+        type: item.type,
       };
 
     default:
