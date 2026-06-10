@@ -1,5 +1,13 @@
 # Changelog
 
+## v7.0.0 - 2026-06-10
+
+### Features
+- add useRawBaseUrl option to disable automatic URL normalization (f1261a2, SmallMain)
+- add config option to display balance in model configuration (173bd8f, SmallMain)
+- add pricing to model selection items (060d36f, SmallMain)
+- add configurable retry status codes (d815cc4, SmallMain)
+
 ## v6.10.0 - 2026-06-09
 
 ### Features
