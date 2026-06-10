@@ -4,7 +4,7 @@ import type {
   LanguageModelResponsePart2,
   ProvideLanguageModelChatResponseOptions,
 } from 'vscode';
-import type { ModelConfig, PerformanceTrace, ProviderConfig } from '../types';
+import type { ChatRequestTrace, ModelConfig, ProviderConfig } from '../types';
 import type { RequestLogger } from '../logger';
 import type { AuthTokenInfo } from '../auth/types';
 import { ProviderType } from './definitions';
@@ -33,7 +33,7 @@ export interface ApiProvider {
     model: ModelConfig,
     messages: readonly LanguageModelChatRequestMessage[],
     options: ProvideLanguageModelChatResponseOptions,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     token: CancellationToken,
     logger: RequestLogger,
     credential: AuthTokenInfo,

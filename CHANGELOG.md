@@ -1,5 +1,48 @@
 # Changelog
 
+## v7.1.0 - 2026-06-10
+
+### Features
+- add global and per-provider proxy configuration (224c835, SmallMain)
+- add SOCKS proxy support (7eca300, SmallMain)
+
+### Fixes
+- force remove 'max_output_tokens' from Codex client request fields (6510571, SmallMain)
+
+## v7.0.0 - 2026-06-10
+
+### Features
+- add useRawBaseUrl option to disable automatic URL normalization (f1261a2, SmallMain)
+- add config option to display balance in model configuration (173bd8f, SmallMain)
+- add pricing to model selection items (060d36f, SmallMain)
+- add configurable retry status codes (d815cc4, SmallMain)
+
+## v6.10.0 - 2026-06-09
+
+### Features
+- propagate and emit normalized token usage for Copilot (8ab8586, SmallMain)
+- extract isRetryableNetworkError to utils and add stream retry for Google Code Assist (aa4115e, SmallMain)
+- add functions for normalizing tool schema values and handling schema keys (16b9622, ZheFox)
+- add Claude Fast mode support (10e0615, SmallMain)
+- add conditional provider suffix for duplicate names (312f186, SmallMain)
+- use model configuration to determine default preset template (5d9367c, SmallMain)
+- add Claude Opus 4.8 model (3cef3c3, SmallMain)
+- openai: add OpenRouter Claude adaptive verbosity support (83ab62f, SmallMain)
+- enable agents window support on extension activation (0a7681d, SmallMain)
+
+### Fixes
+- normalize `additional_tools` output items and fix WebSocket readyState access (7930977, SmallMain)
+
+### Refactors
+- remove context indicator display fix (4fe9618, SmallMain)
+- remove provider category from model configuration (1792cc1, SmallMain)
+
+### Chores
+- update README.md (e807b35, SmallMain)
+- deps: update @anthropic-ai/sdk, @google/genai, openai, and ws dependencies (bb0aa01, SmallMain)
+- add "language-models" to VS Code keywords (e038546, SmallMain)
+- update dts files (2b040e4, SmallMain)
+
 ## v6.9.3 - 2026-05-27
 
 ### Fixes

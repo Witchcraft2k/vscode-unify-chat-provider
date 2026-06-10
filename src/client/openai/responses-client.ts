@@ -23,6 +23,8 @@ import {
   isCacheControlMarker,
   isImageMarker,
   isInternalMarker,
+  isRawBaseUrlEnabled,
+  isUsageMarker,
   normalizeImageMimeType,
   resolveContextCacheConfig,
   resolveChatNetwork,
@@ -34,6 +36,7 @@ import {
   buildBaseUrl,
   createCustomFetch,
   createFirstTokenRecorder,
+  createCopilotUsage,
   estimateTokenCount as sharedEstimateTokenCount,
   getToken,
   getTokenType,
@@ -66,7 +69,11 @@ import {
 } from 'openai/resources/responses/responses';
 import { getBaseModelId } from '../../model-id-utils';
 import { createHash, randomUUID } from 'crypto';
-import { ProviderConfig, ModelConfig, PerformanceTrace } from '../../types';
+import {
+  ChatRequestTrace,
+  ProviderConfig,
+  ModelConfig,
+} from '../../types';
 import {
   WebSocketSessionError,
   WebSocketSessionRequest,
@@ -121,7 +128,7 @@ type OpenAIResponsesRequestContext = {
   abortController: AbortController;
   token: CancellationToken;
   logger: RequestLogger;
-  performanceTrace: PerformanceTrace;
+  requestTrace: ChatRequestTrace;
   expectedIdentity: string;
   credential: AuthTokenInfo;
   imageGenerationOutputMimeType: string;
@@ -143,6 +150,11 @@ type ResponsesApiTool = NonNullable<ResponseCreateParamsBase['tools']>[number];
 type ResponseImageGenerationTool = Extract<
   ResponsesApiTool,
   { type: 'image_generation' }
+>;
+
+type ResponseAdditionalToolsInputItem = Extract<
+  ResponseInputItem,
+  { type: 'additional_tools' }
 >;
 
 type OpenAIResponsesHttpRequestContext = OpenAIResponsesRequestContext & {
@@ -240,6 +252,23 @@ function normalizeMarkerOutputItem(item: ResponseOutputItem): ResponseInputItem 
         status: item.status === 'failed' ? 'incomplete' : item.status,
       };
 
+    case 'additional_tools':
+      if (item.role === 'developer') {
+        const inputItem: ResponseAdditionalToolsInputItem = {
+          id: item.id,
+          role: item.role,
+          tools: item.tools,
+          type: item.type,
+        };
+        return inputItem;
+      }
+
+      return {
+        role: 'developer',
+        tools: item.tools,
+        type: item.type,
+      };
+
     default:
       return item;
   }
@@ -326,6 +355,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
     return buildBaseUrl(config.baseUrl, {
       ensureSuffix: '/v1',
       skipSuffixIfMatch: /\/v\d+$/,
+      useRawBaseUrl: isRawBaseUrlEnabled(config),
     });
   }
 
@@ -374,6 +404,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
   ): OpenAI {
     const chatNetwork =
       mode === 'chat' ? resolveChatNetwork(this.config) : undefined;
+    const proxy = chatNetwork?.proxy ?? resolveChatNetwork(this.config).proxy;
     const effectiveTimeout =
       chatNetwork?.timeout ?? DEFAULT_NORMAL_TIMEOUT_CONFIG;
 
@@ -391,6 +422,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
         responseTimeoutMs: effectiveTimeout.response,
         logger,
         retryConfig: chatNetwork?.retry,
+        proxy,
         type: mode,
         abortSignal,
       }),
@@ -675,7 +707,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
       if (isCacheControlMarker(part)) {
         // ignore it, just use the officially recommended caching strategy.
         return undefined;
-      } else if (isInternalMarker(part)) {
+      } else if (isInternalMarker(part) || isUsageMarker(part)) {
         return undefined;
       } else if (isImageMarker(part)) {
         const mimeType = normalizeImageMimeType(part.mimeType);
@@ -1184,7 +1216,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
     model: ModelConfig,
     messages: readonly LanguageModelChatRequestMessage[],
     options: ProvideLanguageModelChatResponseOptions,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     token: CancellationToken,
     logger: RequestLogger,
     credential: AuthTokenInfo,
@@ -1321,7 +1353,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
       abortController,
       token,
       logger,
-      performanceTrace,
+      requestTrace,
       expectedIdentity,
       credential,
       imageGenerationOutputMimeType:
@@ -1333,7 +1365,8 @@ export class OpenAIResponsesProvider implements ApiProvider {
       includeResponseIdInMarker: httpIncludeResponseIdInMarker,
     };
 
-    performanceTrace.ttf = Date.now() - performanceTrace.tts;
+    requestTrace.performance.ttf =
+      Date.now() - requestTrace.performance.tts;
     logger.verbose(
       `OpenAI Responses transport selected | configured=${this.config.transport ?? 'default'} | effective=${transportMode} | stream=${streamEnabled ? 'true' : 'false'} | session=${sessionId} | previousResponseId=${previousResponseId ? 'present' : 'absent'} | store=${baseBody.store === false ? 'false' : 'default/true'} | websocketCapability=${this.websocketCapability}`,
     );
@@ -1424,7 +1457,8 @@ export class OpenAIResponsesProvider implements ApiProvider {
 
     while (true) {
       attempt += 1;
-      context.performanceTrace.ttf = Date.now() - context.performanceTrace.tts;
+      context.requestTrace.performance.ttf =
+        Date.now() - context.requestTrace.performance.tts;
       const requestBody = this.buildRequestBodyForAttempt(
         context.baseBody,
         context.fullInput,
@@ -1453,13 +1487,14 @@ export class OpenAIResponsesProvider implements ApiProvider {
             stream,
             responseTimeoutMs,
             context.abortController.signal,
+            (error) => context.abortController.abort(error),
           );
           for await (const part of this.parseMessageStream(
             timedStream,
             context.sessionId,
             context.token,
             context.logger,
-            context.performanceTrace,
+            context.requestTrace,
             context.expectedIdentity,
             context.includeResponseIdInMarker,
             context.streamEnabled ? 'sse' : 'http',
@@ -1479,7 +1514,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
           for await (const part of this.parseMessage(
             data,
             context.sessionId,
-            context.performanceTrace,
+            context.requestTrace,
             context.logger,
             context.expectedIdentity,
             context.includeResponseIdInMarker,
@@ -1527,7 +1562,8 @@ export class OpenAIResponsesProvider implements ApiProvider {
 
     while (true) {
       attempt += 1;
-      context.performanceTrace.ttf = Date.now() - context.performanceTrace.tts;
+      context.requestTrace.performance.ttf =
+        Date.now() - context.requestTrace.performance.tts;
       let request: WebSocketSessionRequest<ResponseStreamEvent> | undefined;
       let responseEstablished = false;
 
@@ -1593,7 +1629,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
           context.sessionId,
           context.token,
           context.logger,
-          context.performanceTrace,
+          context.requestTrace,
           context.expectedIdentity,
           context.includeResponseIdInMarker,
           'websocket',
@@ -1683,13 +1719,14 @@ export class OpenAIResponsesProvider implements ApiProvider {
   private async *parseMessage(
     message: OpenAIResponse,
     sessionId: string,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     logger: RequestLogger,
     expectedIdentity: string,
     includeResponseIdInMarker: boolean,
     transportLabel: 'http' | 'sse' | 'websocket',
     imageGenerationOutputMimeType: string,
   ): AsyncGenerator<vscode.LanguageModelResponsePart2> {
+    const performanceTrace = requestTrace.performance;
     // NOTE: The current behavior of VSCode is such that all Parts returned here will be
     // aggregated into a single Part during the next request, and only the Thinking part
     // will be retained during the tool invocation round; most other types of Parts
@@ -1773,7 +1810,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
     );
 
     if (message.usage) {
-      this.processUsage(message.usage, performanceTrace, logger);
+      this.processUsage(message.usage, requestTrace, logger);
     }
   }
 
@@ -1971,12 +2008,13 @@ export class OpenAIResponsesProvider implements ApiProvider {
     sessionId: string,
     token: vscode.CancellationToken,
     logger: RequestLogger,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     expectedIdentity: string,
     includeResponseIdInMarker: boolean,
     transportLabel: 'http' | 'sse' | 'websocket',
     imageGenerationOutputMimeType: string,
   ): AsyncGenerator<vscode.LanguageModelResponsePart2> {
+    const performanceTrace = requestTrace.performance;
     let usage: ResponseUsage | undefined;
     const emittedFunctionCallIds = new Set<string>();
     const addedOutputItems = new Map<number, ResponseOutputItem>();
@@ -2189,16 +2227,21 @@ export class OpenAIResponsesProvider implements ApiProvider {
     }
 
     if (usage) {
-      this.processUsage(usage, performanceTrace, logger);
+      this.processUsage(usage, requestTrace, logger);
     }
   }
 
   private processUsage(
     usage: ResponseUsage,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     logger: RequestLogger,
   ) {
-    sharedProcessUsage(usage.output_tokens, performanceTrace, logger, usage);
+    const normalizedUsage = createCopilotUsage(
+      usage.input_tokens,
+      usage.output_tokens,
+      usage.input_tokens_details.cached_tokens,
+    );
+    sharedProcessUsage(requestTrace, logger, normalizedUsage);
   }
 
   estimateTokenCount(text: string): number {

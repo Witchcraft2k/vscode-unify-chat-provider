@@ -1,18 +1,31 @@
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { isIP } from 'node:net';
+import type { Socket, SocketConnectOpts } from 'node:net';
 import type { ConnectionOptions } from 'node:tls';
+import * as tls from 'node:tls';
 import { DataPartMimeTypes, StatefulMarkerData } from './client/types';
 import type { ProviderHttpLogger } from './logger';
 import { officialModelsManager } from './official-models-manager';
 import type {
+  CopilotUsage,
   ContextCacheConfig,
   ContextCacheType,
   ModelConfig,
   ProviderConfig,
+  ProxyConfig,
+  ProxyType,
   TimeoutConfig,
 } from './types';
 import * as vscode from 'vscode';
-import { EnvHttpProxyAgent, fetch as undiciFetch } from 'undici';
-import type { Dispatcher } from 'undici';
+import {
+  Agent,
+  Dispatcher,
+  EnvHttpProxyAgent,
+  fetch as undiciFetch,
+} from 'undici';
+import type { buildConnector } from 'undici';
+import { SocksClient } from 'socks';
+import type { SocksProxy } from 'socks';
 import { t } from './i18n';
 
 /**
@@ -106,6 +119,7 @@ export interface RetryConfig {
   maxDelayMs?: number;
   backoffMultiplier?: number;
   jitterFactor?: number;
+  statusCodes?: number[];
 }
 
 export interface ResolvedChatTimeoutConfig {
@@ -119,11 +133,13 @@ export interface ResolvedChatRetryConfig {
   maxDelayMs: number;
   backoffMultiplier: number;
   jitterFactor: number;
+  statusCodes?: number[];
 }
 
 export interface ResolvedChatNetworkConfig {
   timeout: ResolvedChatTimeoutConfig;
   retry: ResolvedChatRetryConfig;
+  proxy?: ProxyConfig;
 }
 
 const MAX_SAFE_TIMEOUT_MS = 0x7fffffff;
@@ -131,6 +147,7 @@ const MAX_SAFE_TIMEOUT_MS = 0x7fffffff;
 export interface ChatNetworkOverrides {
   timeout?: TimeoutConfig;
   retry?: RetryConfig;
+  proxy?: ProxyConfig;
 }
 
 const CHAT_NETWORK_CONFIG_NAMESPACE = 'unifyChatProvider';
@@ -187,6 +204,17 @@ function readJitterFactor(value: unknown): number | undefined {
   return n;
 }
 
+function readStatusCodes(value: unknown): number[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  return value.filter(
+    (item): item is number =>
+      typeof item === 'number' && Number.isFinite(item),
+  );
+}
+
 function applyTimeoutOverrides(
   target: ResolvedChatTimeoutConfig,
   raw: unknown,
@@ -224,9 +252,21 @@ function applyRetryOverrides(
   if (jitterFactor !== undefined) target.jitterFactor = jitterFactor;
 }
 
+function applyGlobalRetryOverrides(
+  target: ResolvedChatRetryConfig,
+  raw: unknown,
+): void {
+  applyRetryOverrides(target, raw);
+  if (!isRecord(raw)) return;
+
+  const statusCodes = readStatusCodes(raw['statusCodes']);
+  if (statusCodes !== undefined) target.statusCodes = statusCodes;
+}
+
 function readConfiguredChatNetworkOverrides(): {
   timeout?: unknown;
   retry?: unknown;
+  proxy?: unknown;
 } {
   const config = vscode.workspace.getConfiguration(
     CHAT_NETWORK_CONFIG_NAMESPACE,
@@ -236,8 +276,89 @@ function readConfiguredChatNetworkOverrides(): {
 
   const timeout = raw['timeout'];
   const retry = raw['retry'];
+  const proxy = raw['proxy'];
 
-  return { timeout, retry };
+  return { timeout, retry, proxy };
+}
+
+function readProxyType(value: unknown): ProxyType | undefined {
+  return value === 'vscode' || value === 'direct' || value === 'custom'
+    ? value
+    : undefined;
+}
+
+function normalizeProxyUrl(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  return getProxyProtocol(trimmed) === undefined ? undefined : trimmed;
+}
+
+function normalizeProxyConfig(value: unknown): ProxyConfig | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const out: ProxyConfig = {};
+  const type = readProxyType(value['type']);
+  if (type !== undefined) {
+    out.type = type;
+  }
+
+  const url = normalizeProxyUrl(value['url']);
+  if (url !== undefined) {
+    out.url = url;
+  }
+
+  const authorization = value['authorization'];
+  if (typeof authorization === 'string' && authorization.trim()) {
+    out.authorization = authorization.trim();
+  }
+
+  const strictSSL = value['strictSSL'];
+  if (typeof strictSSL === 'boolean') {
+    out.strictSSL = strictSSL;
+  }
+
+  const noProxy = value['noProxy'];
+  if (Array.isArray(noProxy)) {
+    const entries = noProxy
+      .filter((entry): entry is string => typeof entry === 'string')
+      .map((entry) => entry.trim())
+      .filter((entry) => entry !== '');
+    if (entries.length > 0) {
+      out.noProxy = entries;
+    }
+  }
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function resolveChatProxyConfig(
+  configuredProxy: unknown,
+  overrideProxy: unknown,
+): ProxyConfig | undefined {
+  const override = normalizeProxyConfig(overrideProxy);
+  if (override?.type && override.type !== 'vscode') {
+    return override;
+  }
+
+  const configured = normalizeProxyConfig(configuredProxy);
+  if (configured?.type && configured.type !== 'vscode') {
+    return configured;
+  }
+
+  if (configured?.type === 'vscode') {
+    return { type: 'vscode' };
+  }
+
+  return undefined;
 }
 
 /**
@@ -267,10 +388,11 @@ export function resolveChatNetwork(
 
   const configured = readConfiguredChatNetworkOverrides();
   applyTimeoutOverrides(resolved.timeout, configured.timeout);
-  applyRetryOverrides(resolved.retry, configured.retry);
+  applyGlobalRetryOverrides(resolved.retry, configured.retry);
 
   applyTimeoutOverrides(resolved.timeout, overrides?.timeout);
   applyRetryOverrides(resolved.retry, overrides?.retry);
+  resolved.proxy = resolveChatProxyConfig(configured.proxy, overrides?.proxy);
 
   return resolved;
 }
@@ -327,6 +449,7 @@ export interface FetchWithRetryOptions extends RequestInit {
   logger?: ProviderHttpLogger;
   /** Connection timeout in milliseconds. If not specified, uses DEFAULT_NORMAL_TIMEOUT_CONFIG.connection */
   connectionTimeoutMs?: number;
+  proxy?: ProxyConfig;
 }
 
 export function headersInitToRecord(
@@ -431,9 +554,67 @@ export function bodyInitToLoggableValue(
 }
 
 /**
+ * Runs a callback when a response body is consumed, errors, or is cancelled.
+ */
+export function runWhenResponseBodySettles(
+  response: Response,
+  callback: () => void,
+): Response {
+  let settled = false;
+  const settle = (): void => {
+    if (settled) {
+      return;
+    }
+    settled = true;
+    callback();
+  };
+
+  if (!response.body) {
+    settle();
+    return response;
+  }
+
+  const reader = response.body.getReader();
+  const wrappedBody = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const result = await reader.read();
+        if (result.done) {
+          settle();
+          controller.close();
+          return;
+        }
+
+        controller.enqueue(result.value);
+      } catch (error) {
+        settle();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      settle();
+      await reader.cancel(reason);
+    },
+  });
+
+  return new Response(wrappedBody, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+/**
  * Check if an HTTP status code is retryable.
  */
-export function isRetryableStatusCode(status: number): boolean {
+export function isRetryableStatusCode(
+  status: number,
+  statusCodes?: readonly number[],
+): boolean {
+  if (statusCodes !== undefined) {
+    return statusCodes.includes(status);
+  }
+
   return (
     (RETRYABLE_STATUS_CODES as readonly number[]).includes(status) ||
     status >= 500
@@ -493,16 +674,91 @@ function tryGetErrorCode(value: unknown): string | undefined {
   return typeof code === 'string' ? code : undefined;
 }
 
+function hasErrorCause(value: unknown): value is { cause: unknown } {
+  return typeof value === 'object' && value !== null && 'cause' in value;
+}
+
 function getErrorCode(error: unknown): string | undefined {
-  const direct = tryGetErrorCode(error);
-  if (direct) {
-    return direct;
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current && !seen.has(current)) {
+    seen.add(current);
+
+    const code = tryGetErrorCode(current);
+    if (code) {
+      return code;
+    }
+
+    if (!hasErrorCause(current)) {
+      break;
+    }
+
+    current = current.cause;
   }
-  if (typeof error === 'object' && error !== null && 'cause' in error) {
-    return tryGetErrorCode((error as { cause: unknown }).cause);
-  }
+
   return undefined;
 }
+
+function tryGetErrorMessage(value: unknown): string | undefined {
+  if (value instanceof Error) {
+    return value.message;
+  }
+  if (typeof value !== 'object' || value === null) {
+    return undefined;
+  }
+  if (!('message' in value)) {
+    return undefined;
+  }
+  const message = (value as { message: unknown }).message;
+  return typeof message === 'string' ? message : undefined;
+}
+
+function hasRetryableNetworkErrorMessageText(message: string): boolean {
+  const normalizedMessage = message.toLowerCase();
+  return (
+    normalizedMessage.includes('fetch failed') ||
+    normalizedMessage.includes('network error') ||
+    normalizedMessage.includes('connection timeout') ||
+    normalizedMessage.includes('socket hang up') ||
+    normalizedMessage.includes('other side closed')
+  );
+}
+
+function hasRetryableNetworkErrorMessage(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current && !seen.has(current)) {
+    seen.add(current);
+
+    const message = tryGetErrorMessage(current);
+    if (message && hasRetryableNetworkErrorMessageText(message)) {
+      return true;
+    }
+
+    if (!hasErrorCause(current)) {
+      break;
+    }
+
+    current = current.cause;
+  }
+
+  return false;
+}
+
+const RETRYABLE_NETWORK_ERROR_CODES = new Set<string>([
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ECONNREFUSED',
+  'EAI_AGAIN',
+  'ENOTFOUND',
+  // undici / fetch (Node) internal error codes
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_HEADERS_TIMEOUT',
+  'UND_ERR_BODY_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
 
 const ABORT_LIKE_ERROR_CODES = new Set<string>([
   'ABORT_ERR',
@@ -717,6 +973,27 @@ export function describeNetworkError(error: unknown): string {
   return message;
 }
 
+export function isRetryableNetworkError(
+  error: unknown,
+  options: { timedOut?: boolean } = {},
+): boolean {
+  if (!error) {
+    return false;
+  }
+
+  // Retry on our own connection-timeout aborts (may surface as AbortError).
+  if (options.timedOut && isAbortError(error)) {
+    return true;
+  }
+
+  const code = getErrorCode(error);
+  if (code && RETRYABLE_NETWORK_ERROR_CODES.has(code)) {
+    return true;
+  }
+
+  return hasRetryableNetworkErrorMessage(error);
+}
+
 /**
  * Fetch with automatic retry for transient HTTP errors.
  *
@@ -730,7 +1007,12 @@ export async function fetchWithRetry(
   input: RequestInfo | URL,
   options: FetchWithRetryOptions = {},
 ): Promise<Response> {
-  return fetchWithRetryUsingFetch(fetchWithUndici, input, options);
+  const { proxy, ...retryOptions } = options;
+  return fetchWithRetryUsingFetch(
+    (fetchInput, fetchInit) => fetchWithUndici(fetchInput, fetchInit, proxy),
+    input,
+    { ...retryOptions, proxy: { type: 'direct' } },
+  );
 }
 
 type RequestInitWithDispatcher = RequestInit & { dispatcher?: Dispatcher };
@@ -779,11 +1061,119 @@ interface UndiciProxyAgentLikeOptions {
   requestTls?: unknown;
 }
 
+type SocksProxyProtocol =
+  | 'socks:'
+  | 'socks4:'
+  | 'socks4a:'
+  | 'socks5:'
+  | 'socks5h:';
+type ProxyProtocol = 'http:' | 'https:' | SocksProxyProtocol;
+type SocksClientEstablishedEvent = Awaited<
+  ReturnType<typeof SocksClient.createConnection>
+>;
+
+interface ParsedNoProxyEntry {
+  hostname: string;
+  port: number;
+}
+
+interface ParsedSocksProxy {
+  proxy: SocksProxy;
+  url: string;
+}
+
+interface SocksProxyDispatcherOptions {
+  agentOptions: Agent.Options;
+  connect: buildConnector.connector;
+  noProxy: string;
+}
+
 const defaultDispatcherCache = new Map<string, Dispatcher>();
 const proxiedDispatcherCache = new WeakMap<
   Dispatcher,
   Map<string, Dispatcher>
 >();
+
+class SocksProxyDispatcher extends Dispatcher {
+  private readonly directAgent: Agent;
+  private readonly noProxyEntries: ParsedNoProxyEntry[];
+  private readonly noProxyValue: string;
+  private readonly socksAgent: Agent;
+
+  constructor(options: SocksProxyDispatcherOptions) {
+    super();
+    this.noProxyValue = options.noProxy;
+    this.noProxyEntries = parseNoProxyEntries(options.noProxy);
+    this.directAgent = new Agent(options.agentOptions);
+    this.socksAgent = new Agent({
+      ...options.agentOptions,
+      connect: options.connect,
+    });
+  }
+
+  override dispatch(
+    options: Dispatcher.DispatchOptions,
+    handler: Dispatcher.DispatchHandler,
+  ): boolean {
+    const origin = options.origin;
+    if (origin === undefined) {
+      return this.socksAgent.dispatch(options, handler);
+    }
+
+    const url = new URL(origin);
+    const dispatcher = shouldProxyUrl(url, this.noProxyValue, this.noProxyEntries)
+      ? this.socksAgent
+      : this.directAgent;
+    return dispatcher.dispatch(options, handler);
+  }
+
+  override close(callback: () => void): void;
+  override close(): Promise<void>;
+  override close(callback?: () => void): Promise<void> | void {
+    const closePromise = Promise.all([
+      this.directAgent.close(),
+      this.socksAgent.close(),
+    ]).then(() => undefined);
+
+    if (callback !== undefined) {
+      closePromise.then(callback, callback);
+      return;
+    }
+
+    return closePromise;
+  }
+
+  override destroy(callback: () => void): void;
+  override destroy(error: Error | null, callback: () => void): void;
+  override destroy(error?: Error | null): Promise<void>;
+  override destroy(
+    errorOrCallback?: Error | null | (() => void),
+    callback?: () => void,
+  ): Promise<void> | void {
+    const error =
+      typeof errorOrCallback === 'function' ? undefined : errorOrCallback;
+    const closePromise = Promise.all([
+      error === undefined
+        ? this.directAgent.destroy()
+        : this.directAgent.destroy(error),
+      error === undefined
+        ? this.socksAgent.destroy()
+        : this.socksAgent.destroy(error),
+    ]).then(() => undefined);
+
+    if (typeof errorOrCallback === 'function') {
+      closePromise.then(errorOrCallback, errorOrCallback);
+      return;
+    }
+
+    if (callback !== undefined) {
+      closePromise.then(callback, callback);
+      return;
+    }
+
+    return closePromise;
+  }
+}
 
 function readConfiguredHttpProxySupport(value: unknown): HttpProxySupportMode {
   switch (value) {
@@ -814,21 +1204,38 @@ function normalizeNoProxyList(value: readonly string[] | undefined): string[] {
   return value.map((entry) => entry.trim()).filter((entry) => entry !== '');
 }
 
-function getConfiguredHttpProxySettings(): ResolvedHttpProxySettings {
+function getConfiguredHttpProxySettings(
+  proxyConfig: ProxyConfig | undefined,
+): ResolvedHttpProxySettings {
   const config = vscode.workspace.getConfiguration('http');
-  const proxy = normalizeProxyString(config.get<string>('proxy'));
-  const proxyAuthorization = normalizeProxyString(
+  const vscodeProxy = normalizeProxyString(config.get<string>('proxy'));
+  const vscodeProxyAuthorization = normalizeProxyString(
     config.get<string | null>('proxyAuthorization') ?? undefined,
   );
+  const vscodeProxyStrictSSL = config.get<boolean>('proxyStrictSSL') ?? true;
+  const vscodeNoProxy = normalizeNoProxyList(config.get<string[]>('noProxy'));
+  const proxySupport = readConfiguredHttpProxySupport(
+    config.get<unknown>('proxySupport'),
+  );
+
+  if (proxyConfig?.type === 'custom') {
+    return {
+      proxy: normalizeProxyString(proxyConfig.url),
+      proxyAuthorization: normalizeProxyString(proxyConfig.authorization),
+      proxyStrictSSL: proxyConfig.strictSSL ?? vscodeProxyStrictSSL,
+      proxySupport,
+      noProxy: proxyConfig.noProxy
+        ? normalizeNoProxyList(proxyConfig.noProxy)
+        : vscodeNoProxy,
+    };
+  }
 
   return {
-    proxy,
-    proxyAuthorization,
-    proxyStrictSSL: config.get<boolean>('proxyStrictSSL') ?? true,
-    proxySupport: readConfiguredHttpProxySupport(
-      config.get<unknown>('proxySupport'),
-    ),
-    noProxy: normalizeNoProxyList(config.get<string[]>('noProxy')),
+    proxy: vscodeProxy,
+    proxyAuthorization: vscodeProxyAuthorization,
+    proxyStrictSSL: vscodeProxyStrictSSL,
+    proxySupport,
+    noProxy: vscodeNoProxy,
   };
 }
 
@@ -970,6 +1377,415 @@ function hasOwnProperties(value: object): boolean {
   return Object.keys(value).length > 0;
 }
 
+const DEFAULT_CONNECT_TIMEOUT_MS = 10_000;
+const DEFAULT_PROXY_PORTS: Record<string, number> = {
+  'http:': 80,
+  'https:': 443,
+};
+
+function getNoProxyEnv(): string {
+  return process.env.no_proxy ?? process.env.NO_PROXY ?? '';
+}
+
+function getNoProxyValue(settings: ResolvedHttpProxySettings): string {
+  const configuredNoProxy = settings.noProxy.join(',');
+  return configuredNoProxy === '' ? getNoProxyEnv() : configuredNoProxy;
+}
+
+function parseNoProxyEntries(value: string): ParsedNoProxyEntry[] {
+  const entries = value.split(/[,\s]/);
+  const parsedEntries: ParsedNoProxyEntry[] = [];
+
+  for (const entry of entries) {
+    if (!entry) {
+      continue;
+    }
+
+    const parsed = /^(.+):(\d+)$/.exec(entry);
+    parsedEntries.push({
+      hostname: (parsed ? parsed[1] : entry)
+        .replace(/^\*?\./, '')
+        .toLowerCase(),
+      port: parsed ? Number.parseInt(parsed[2], 10) : 0,
+    });
+  }
+
+  return parsedEntries;
+}
+
+function getNoProxyHostname(url: URL): string {
+  return url.host.replace(/:\d*$/, '').toLowerCase();
+}
+
+function getUrlPort(url: URL): number {
+  return Number.parseInt(url.port, 10) || DEFAULT_PROXY_PORTS[url.protocol] || 0;
+}
+
+function shouldProxyUrl(
+  url: URL,
+  noProxyValue: string,
+  noProxyEntries: readonly ParsedNoProxyEntry[],
+): boolean {
+  if (noProxyEntries.length === 0) {
+    return true;
+  }
+  if (noProxyValue === '*') {
+    return false;
+  }
+
+  const hostname = getNoProxyHostname(url);
+  const port = getUrlPort(url);
+
+  for (const entry of noProxyEntries) {
+    if (entry.port !== 0 && entry.port !== port) {
+      continue;
+    }
+    if (hostname === entry.hostname) {
+      return false;
+    }
+    if (hostname.slice(-(entry.hostname.length + 1)) === `.${entry.hostname}`) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function getProxyProtocol(proxy: string | undefined): ProxyProtocol | undefined {
+  if (proxy === undefined) {
+    return undefined;
+  }
+
+  try {
+    const protocol = new URL(proxy).protocol.toLowerCase();
+    if (
+      protocol === 'http:' ||
+      protocol === 'https:' ||
+      protocol === 'socks:' ||
+      protocol === 'socks4:' ||
+      protocol === 'socks4a:' ||
+      protocol === 'socks5:' ||
+      protocol === 'socks5h:'
+    ) {
+      return protocol;
+    }
+  } catch {
+    return undefined;
+  }
+
+  return undefined;
+}
+
+function isSocksProxyProtocol(
+  protocol: ProxyProtocol | undefined,
+): protocol is SocksProxyProtocol {
+  return (
+    protocol === 'socks:' ||
+    protocol === 'socks4:' ||
+    protocol === 'socks4a:' ||
+    protocol === 'socks5:' ||
+    protocol === 'socks5h:'
+  );
+}
+
+function normalizeSocketHost(host: string): string {
+  return host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host;
+}
+
+function decodeProxyUrlComponent(value: string): string {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+
+function readProxyAuthorizationCredentials(
+  value: string | undefined,
+): { userId: string; password?: string } | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  const basic = /^basic\s+(.+)$/i.exec(value);
+  const decoded = basic
+    ? Buffer.from(basic[1], 'base64').toString('utf8')
+    : value;
+  const separator = decoded.indexOf(':');
+  if (separator <= 0) {
+    return undefined;
+  }
+
+  return {
+    userId: decoded.slice(0, separator),
+    password: decoded.slice(separator + 1),
+  };
+}
+
+function getSocksProxyType(protocol: SocksProxyProtocol): 4 | 5 {
+  return protocol === 'socks4:' || protocol === 'socks4a:' ? 4 : 5;
+}
+
+function readSocksProxy(
+  proxy: string,
+  protocol: SocksProxyProtocol,
+  proxyAuthorization: string | undefined,
+): ParsedSocksProxy {
+  const url = new URL(proxy);
+  const host = normalizeSocketHost(url.hostname);
+  const port = url.port === '' ? 1080 : Number.parseInt(url.port, 10);
+  const socksProxy: SocksProxy = {
+    port,
+    type: getSocksProxyType(protocol),
+  };
+
+  if (isIP(host) === 0) {
+    socksProxy.host = host;
+  } else {
+    socksProxy.ipaddress = host;
+  }
+
+  const urlUserId = decodeProxyUrlComponent(url.username);
+  const urlPassword = decodeProxyUrlComponent(url.password);
+  if (urlUserId !== '') {
+    socksProxy.userId = urlUserId;
+    socksProxy.password = urlPassword;
+  } else {
+    const credentials = readProxyAuthorizationCredentials(proxyAuthorization);
+    if (credentials !== undefined) {
+      socksProxy.userId = credentials.userId;
+      socksProxy.password = credentials.password;
+    }
+  }
+
+  return {
+    proxy: socksProxy,
+    url: proxy,
+  };
+}
+
+function createAgentOptions(
+  base: ResolvedUndiciDispatcherOptions,
+  settings: ResolvedHttpProxySettings,
+): Agent.Options {
+  const options: Agent.Options = {};
+
+  if (base.allowH2 !== undefined) {
+    options.allowH2 = base.allowH2;
+  }
+  if (base.bodyTimeout !== undefined) {
+    options.bodyTimeout = base.bodyTimeout;
+  }
+  if (base.connectTimeout !== undefined) {
+    options.connectTimeout = base.connectTimeout;
+  }
+  if (base.headersTimeout !== undefined) {
+    options.headersTimeout = base.headersTimeout;
+  }
+
+  const connect: ConnectionOptions = {};
+  if (base.requestCA !== undefined) {
+    connect.ca = base.requestCA;
+  }
+  if (!settings.proxyStrictSSL) {
+    connect.rejectUnauthorized = false;
+  }
+  if (hasOwnProperties(connect)) {
+    options.connect = connect;
+  }
+
+  return options;
+}
+
+function getDestinationPort(options: buildConnector.Options): number {
+  if (options.port !== '') {
+    return Number.parseInt(options.port, 10);
+  }
+  return options.protocol === 'https:' ? 443 : 80;
+}
+
+function getTlsServerName(options: buildConnector.Options): string | undefined {
+  const candidate = options.servername ?? normalizeSocketHost(options.hostname);
+  return isIP(candidate) === 0 ? candidate : undefined;
+}
+
+function createSocksTimeoutError(
+  proxyUrl: string,
+  options: buildConnector.Options,
+  timeoutMs: number,
+): Error {
+  const error = new Error(
+    `SOCKS proxy connection timeout after ${timeoutMs}ms: ${proxyUrl} -> ${options.hostname}:${getDestinationPort(options)}`,
+  );
+  Object.defineProperty(error, 'code', {
+    configurable: true,
+    enumerable: false,
+    value: 'ETIMEDOUT',
+    writable: true,
+  });
+  return error;
+}
+
+function configureConnectedSocket(socket: Socket | tls.TLSSocket): void {
+  socket.setNoDelay(true);
+  socket.setKeepAlive(true, 60_000);
+}
+
+function createTlsSocketOverSocks(
+  socket: Socket,
+  options: buildConnector.Options,
+  base: ResolvedUndiciDispatcherOptions,
+  settings: ResolvedHttpProxySettings,
+): Promise<tls.TLSSocket> {
+  return new Promise((resolve, reject) => {
+    const tlsOptions: ConnectionOptions = {
+      ALPNProtocols: base.allowH2 ? ['http/1.1', 'h2'] : ['http/1.1'],
+      ca: base.requestCA,
+      servername: getTlsServerName(options),
+      socket,
+    };
+    if (!settings.proxyStrictSSL) {
+      tlsOptions.rejectUnauthorized = false;
+    }
+
+    const tlsSocket = tls.connect(tlsOptions);
+    const cleanup = (): void => {
+      tlsSocket.removeListener('secureConnect', onSecureConnect);
+      tlsSocket.removeListener('error', onError);
+    };
+    const onSecureConnect = (): void => {
+      cleanup();
+      configureConnectedSocket(tlsSocket);
+      resolve(tlsSocket);
+    };
+    const onError = (error: Error): void => {
+      cleanup();
+      reject(error);
+    };
+
+    tlsSocket.once('secureConnect', onSecureConnect);
+    tlsSocket.once('error', onError);
+  });
+}
+
+function createSocksConnector(
+  socksProxy: ParsedSocksProxy,
+  base: ResolvedUndiciDispatcherOptions,
+  settings: ResolvedHttpProxySettings,
+): buildConnector.connector {
+  return (options, callback): void => {
+    const timeoutMs = base.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT_MS;
+    let settled = false;
+    let activeSocket: Socket | tls.TLSSocket | undefined;
+
+    const settle = (
+      error: Error | null,
+      socket: Socket | tls.TLSSocket | null,
+    ): void => {
+      if (settled) {
+        socket?.destroy();
+        return;
+      }
+
+      settled = true;
+      clearTimeout(timeoutId);
+      if (error !== null) {
+        callback(error, null);
+        return;
+      }
+      if (socket === null) {
+        callback(
+          new Error('SOCKS proxy connection did not return a socket'),
+          null,
+        );
+        return;
+      }
+      callback(null, socket);
+    };
+
+    const timeoutId = setTimeout(() => {
+      activeSocket?.destroy();
+      settle(createSocksTimeoutError(socksProxy.url, options, timeoutMs), null);
+    }, timeoutMs);
+
+    const destination = {
+      host: normalizeSocketHost(options.hostname),
+      port: getDestinationPort(options),
+    };
+
+    const proxyHost = socksProxy.proxy.host ?? socksProxy.proxy.ipaddress;
+    const socketOptions: SocketConnectOpts | undefined =
+      options.localAddress == null || proxyHost === undefined
+        ? undefined
+        : {
+            host: proxyHost,
+            localAddress: options.localAddress,
+            port: socksProxy.proxy.port,
+          };
+
+    void SocksClient.createConnection({
+      command: 'connect',
+      destination,
+      proxy: socksProxy.proxy,
+      set_tcp_nodelay: true,
+      socket_options: socketOptions,
+      timeout: timeoutMs,
+    }).then(
+      (event: SocksClientEstablishedEvent) => {
+        activeSocket = event.socket;
+        configureConnectedSocket(event.socket);
+
+        if (options.protocol !== 'https:') {
+          settle(null, event.socket);
+          return;
+        }
+
+        void createTlsSocketOverSocks(
+          event.socket,
+          options,
+          base,
+          settings,
+        ).then(
+          (tlsSocket) => {
+            activeSocket = tlsSocket;
+            settle(null, tlsSocket);
+          },
+          (error: unknown) => {
+            settle(toError(error), null);
+          },
+        );
+      },
+      (error: unknown) => {
+        settle(toError(error), null);
+      },
+    );
+  };
+}
+
+function createSocksProxyDispatcher(
+  base: ResolvedUndiciDispatcherOptions,
+  settings: ResolvedHttpProxySettings,
+  protocol: SocksProxyProtocol,
+): Dispatcher {
+  const proxy = settings.proxy;
+  if (proxy === undefined) {
+    return new Agent(createAgentOptions(base, settings));
+  }
+
+  const agentOptions = createAgentOptions(base, settings);
+  const socksProxy = readSocksProxy(
+    proxy,
+    protocol,
+    settings.proxyAuthorization,
+  );
+
+  return new SocksProxyDispatcher({
+    agentOptions,
+    connect: createSocksConnector(socksProxy, base, settings),
+    noProxy: getNoProxyValue(settings),
+  });
+}
+
 function createEnvProxyDispatcher(
   originalDispatcher: Dispatcher | undefined,
   settings: ResolvedHttpProxySettings,
@@ -982,6 +1798,10 @@ function createEnvProxyDispatcher(
   if (originalDispatcher !== undefined && base.socketPath !== undefined) {
     return originalDispatcher;
   }
+
+  const proxyProtocol = getProxyProtocol(settings.proxy);
+  const isSocksProxy = isSocksProxyProtocol(proxyProtocol);
+  const noProxy = settings.noProxy.join(',');
 
   const signature = JSON.stringify({
     allowH2: base.allowH2,
@@ -996,10 +1816,11 @@ function createEnvProxyDispatcher(
       '',
     envNoProxy: process.env.NO_PROXY ?? process.env.no_proxy ?? '',
     headersTimeout: base.headersTimeout,
-    noProxy: settings.noProxy,
+    noProxy: isSocksProxy ? getNoProxyValue(settings) : settings.noProxy,
     proxy: settings.proxy ?? '',
     proxyAuthorization: settings.proxyAuthorization ?? '',
     proxyCA: base.proxyCA ? 'custom' : '',
+    proxyProtocol: proxyProtocol ?? '',
     proxyStrictSSL: settings.proxyStrictSSL,
     requestCA: base.requestCA ? 'custom' : '',
   });
@@ -1019,6 +1840,12 @@ function createEnvProxyDispatcher(
     return cached;
   }
 
+  if (isSocksProxy) {
+    const dispatcher = createSocksProxyDispatcher(base, settings, proxyProtocol);
+    dispatcherCache.set(signature, dispatcher);
+    return dispatcher;
+  }
+
   const init: EnvProxyDispatcherInit = {};
 
   setIfDefined(init, 'allowH2', base.allowH2);
@@ -1029,7 +1856,6 @@ function createEnvProxyDispatcher(
   setIfDefined(init, 'httpsProxy', settings.proxy);
   setIfDefined(init, 'token', settings.proxyAuthorization);
 
-  const noProxy = settings.noProxy.join(',');
   if (noProxy !== '') {
     init.noProxy = noProxy;
   }
@@ -1075,9 +1901,16 @@ function createEnvProxyDispatcher(
 
 function getUndiciInitWithProxySupport(
   init?: RequestInitWithDispatcher,
+  proxyConfig?: ProxyConfig,
 ): RequestInitWithDispatcher | undefined {
-  const settings = getConfiguredHttpProxySettings();
+  const settings = getConfiguredHttpProxySettings(proxyConfig);
   if (settings.proxySupport === 'off') {
+    return init;
+  }
+  if (proxyConfig?.type === 'direct') {
+    return init;
+  }
+  if (proxyConfig?.type === 'custom' && settings.proxy === undefined) {
     return init;
   }
 
@@ -1228,6 +2061,7 @@ function adaptUndiciResponse(response: UndiciFetchResponse): Response {
 function fetchWithUndici(
   input: RequestInfo | URL,
   init?: RequestInitWithDispatcher,
+  proxyConfig?: ProxyConfig,
 ): Promise<Response> {
   if (typeof Request !== 'undefined' && input instanceof Request) {
     throw new TypeError('fetchWithRetry does not support Request input');
@@ -1243,7 +2077,7 @@ function fetchWithUndici(
 
   return undiciFetch(
     input,
-    toUndiciRequestInit(getUndiciInitWithProxySupport(init)),
+    toUndiciRequestInit(getUndiciInitWithProxySupport(init, proxyConfig)),
   ).then(adaptUndiciResponse);
 }
 
@@ -1252,7 +2086,8 @@ export async function fetchWithRetryUsingFetch(
   input: RequestInfo | URL,
   options: FetchWithRetryOptions = {},
 ): Promise<Response> {
-  const { retryConfig, logger, connectionTimeoutMs, ...fetchOptions } = options;
+  const { retryConfig, logger, connectionTimeoutMs, proxy, ...fetchOptions } =
+    options;
   const maxRetries =
     retryConfig?.maxRetries ?? DEFAULT_NORMAL_RETRY_CONFIG.maxRetries;
   const initialDelayMs =
@@ -1264,6 +2099,7 @@ export async function fetchWithRetryUsingFetch(
     DEFAULT_NORMAL_RETRY_CONFIG.backoffMultiplier;
   const jitterFactor =
     retryConfig?.jitterFactor ?? DEFAULT_NORMAL_RETRY_CONFIG.jitterFactor;
+  const retryStatusCodes = retryConfig?.statusCodes;
   const connTimeout =
     connectionTimeoutMs ?? DEFAULT_NORMAL_TIMEOUT_CONFIG.connection;
   const timeoutMessage = t('Timeout: Request aborted after {0}ms', connTimeout);
@@ -1272,77 +2108,13 @@ export async function fetchWithRetryUsingFetch(
   let lastError: Error | undefined;
   let attempt = 0;
 
-  const hasCause = (value: unknown): value is { cause: unknown } =>
-    typeof value === 'object' && value !== null && 'cause' in value;
-
-  const tryGetErrorCode = (value: unknown): string | undefined => {
-    if (typeof value !== 'object' || value === null) {
-      return undefined;
-    }
-    if (!('code' in value)) {
-      return undefined;
-    }
-    const code = (value as { code: unknown }).code;
-    return typeof code === 'string' ? code : undefined;
-  };
-
-  const retryableCodes = new Set<string>([
-    'ECONNRESET',
-    'ETIMEDOUT',
-    'ECONNREFUSED',
-    'EAI_AGAIN',
-    'ENOTFOUND',
-    // undici / fetch (Node) internal error codes
-    'UND_ERR_CONNECT_TIMEOUT',
-    'UND_ERR_HEADERS_TIMEOUT',
-    'UND_ERR_BODY_TIMEOUT',
-    'UND_ERR_SOCKET',
-  ]);
-
-  const isRetryableNetworkError = (
-    error: unknown,
-    options: { timedOut: boolean },
-  ): boolean => {
-    if (!error) {
-      return false;
-    }
-
-    // Retry on our own connection-timeout aborts (may surface as AbortError).
-    if (options.timedOut && isAbortError(error)) {
-      return true;
-    }
-
-    const directCode = tryGetErrorCode(error);
-    if (directCode && retryableCodes.has(directCode)) {
-      return true;
-    }
-
-    if (hasCause(error)) {
-      const causeCode = tryGetErrorCode(error.cause);
-      if (causeCode && retryableCodes.has(causeCode)) {
-        return true;
-      }
-    }
-
-    if (error instanceof Error) {
-      const message = error.message.toLowerCase();
-      if (
-        message.includes('fetch failed') ||
-        message.includes('network error') ||
-        message.includes('socket hang up')
-      ) {
-        return true;
-      }
-    }
-
-    return false;
-  };
-
   while (attempt <= maxRetries) {
     // Create timeout controller for connection timeout
     const timeoutController = new AbortController();
     const existingSignal = fetchOptions.signal;
     let didTimeout = false;
+    let keepAbortLinkForResponseBody = false;
+    let abortLinkCleanedUp = false;
 
     // Combine with existing signal if present
     throwIfAborted(existingSignal);
@@ -1359,22 +2131,48 @@ export async function fetchWithRetryUsingFetch(
       }
     }
 
+    const cleanupAbortLink = (): void => {
+      if (abortLinkCleanedUp) {
+        return;
+      }
+      abortLinkCleanedUp = true;
+      if (onExistingAbort && existingSignal) {
+        existingSignal.removeEventListener('abort', onExistingAbort);
+      }
+    };
+
+    const keepAbortLinkUntilBodySettles = (response: Response): Response => {
+      if (!onExistingAbort || !existingSignal) {
+        return response;
+      }
+      keepAbortLinkForResponseBody = true;
+      return runWhenResponseBodySettles(response, cleanupAbortLink);
+    };
+
     const timeoutId = setTimeout(() => {
       didTimeout = true;
       timeoutController.abort(new Error(timeoutMessage));
     }, connTimeout);
 
     try {
-      const response = await fetcher(input, {
-        ...fetchOptions,
-        signal: timeoutController.signal,
-      });
+      const requestInit = getUndiciInitWithProxySupport(
+        {
+          ...fetchOptions,
+          signal: timeoutController.signal,
+        },
+        proxy,
+      );
+
+      const response = await fetcher(input, requestInit);
 
       clearTimeout(timeoutId);
 
       // If successful or non-retryable error, return immediately
-      if (response.ok || !isRetryableStatusCode(response.status)) {
-        return response;
+      if (
+        response.ok ||
+        !isRetryableStatusCode(response.status, retryStatusCodes)
+      ) {
+        return keepAbortLinkUntilBodySettles(response);
       }
 
       // Retryable status code - decide whether to retry
@@ -1449,8 +2247,6 @@ export async function fetchWithRetryUsingFetch(
 
       // Retryable connection/network errors.
       if (
-        (error instanceof Error &&
-          error.message.includes('Connection timeout')) ||
         isRetryableNetworkError(error, {
           timedOut: timeoutController.signal.aborted,
         })
@@ -1484,8 +2280,8 @@ export async function fetchWithRetryUsingFetch(
       // Other errors (network errors, user abort) should not be retried
       throw error;
     } finally {
-      if (onExistingAbort && existingSignal) {
-        existingSignal.removeEventListener('abort', onExistingAbort);
+      if (!keepAbortLinkForResponseBody) {
+        cleanupAbortLink();
       }
     }
   }
@@ -1512,6 +2308,7 @@ export async function* withIdleTimeout<T>(
   source: AsyncIterable<T>,
   responseTimeoutMs: number,
   abortSignal?: AbortSignal,
+  onTimeout?: (error: Error) => void,
 ): AsyncGenerator<T> {
   const iterator = source[Symbol.asyncIterator]();
   const timeoutMessage = t(
@@ -1578,7 +2375,9 @@ export async function* withIdleTimeout<T>(
         }
 
         if (result.kind === 'timeout') {
-          throw createTimeoutError(timeoutMessage);
+          const timeoutError = createTimeoutError(timeoutMessage);
+          onTimeout?.(timeoutError);
+          throw timeoutError;
         }
 
         // Normal iteration result
@@ -1634,6 +2433,25 @@ export function normalizeBaseUrlInput(raw: string): string {
   return normalized;
 }
 
+export function normalizeRawBaseUrlInput(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error('Base URL is required');
+  }
+  new URL(trimmed);
+  return trimmed;
+}
+
+export function normalizeUseRawBaseUrl(raw: unknown): true | undefined {
+  return raw === true ? true : undefined;
+}
+
+export function isRawBaseUrlEnabled(
+  provider: Pick<ProviderConfig, 'useRawBaseUrl'>,
+): boolean {
+  return provider.useRawBaseUrl === true;
+}
+
 export function isCacheControlMarker(
   part: vscode.LanguageModelDataPart,
 ): boolean {
@@ -1647,8 +2465,46 @@ export function isInternalMarker(part: vscode.LanguageModelDataPart): boolean {
   return part.mimeType === DataPartMimeTypes.StatefulMarker;
 }
 
+export function isUsageMarker(part: vscode.LanguageModelDataPart): boolean {
+  return part.mimeType === DataPartMimeTypes.Usage;
+}
+
 export function isImageMarker(part: vscode.LanguageModelDataPart): boolean {
   return part.mimeType.startsWith('image/');
+}
+
+function normalizeTokenCount(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(value));
+}
+
+export function normalizeCopilotUsage(usage: CopilotUsage): CopilotUsage {
+  const promptTokens = normalizeTokenCount(usage.prompt_tokens);
+  const completionTokens = normalizeTokenCount(usage.completion_tokens);
+  const cachedTokens = normalizeTokenCount(
+    usage.prompt_tokens_details.cached_tokens,
+  );
+
+  return {
+    prompt_tokens: promptTokens,
+    completion_tokens: completionTokens,
+    total_tokens: promptTokens + completionTokens,
+    prompt_tokens_details: {
+      cached_tokens: cachedTokens,
+    },
+  };
+}
+
+export function createUsageDataPart(
+  usage: CopilotUsage,
+): vscode.LanguageModelDataPart {
+  const normalized = normalizeCopilotUsage(usage);
+  return new vscode.LanguageModelDataPart(
+    Buffer.from(JSON.stringify(normalized), 'utf8'),
+    DataPartMimeTypes.Usage,
+  );
 }
 
 export interface StatefulMarkerEnvelope<T extends object> {

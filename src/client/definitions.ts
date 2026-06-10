@@ -137,6 +137,16 @@ function modelFamilyIncludes(
   return getModelFamily(model).toLowerCase().includes(expected.toLowerCase());
 }
 
+function modelIdentityIncludes(
+  model: { id: string; family?: string },
+  expected: string,
+): boolean {
+  const normalizedExpected = expected.toLowerCase();
+  return [model.family, getBaseModelId(model.id)].some((value) =>
+    value?.toLowerCase().includes(normalizedExpected),
+  );
+}
+
 export enum FeatureId {
   /**
    * @see https://www.volcengine.com/docs/82379/1569618?lang=zh
@@ -194,6 +204,12 @@ export enum FeatureId {
    * @see https://openrouter.ai/docs/guides/best-practices/reasoning-tokens
    */
   OpenAIUseReasoningParam = 'openai_use-reasoning-param',
+  /**
+   * Use OpenRouter Claude adaptive thinking with top-level `verbosity`.
+   *
+   * @see https://openrouter.ai/docs/cookbook/evaluate-and-optimize/model-migrations/claude-4-7
+   */
+  OpenRouterUseClaudeAdaptiveVerbosity = 'openrouter_use-claude-adaptive-verbosity',
   /**
    * @see https://platform.xiaomimimo.com/#/docs/api/text-generation/openai-api
    * @see https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
@@ -307,12 +323,6 @@ export enum FeatureId {
    */
   OpenAIUseReasoningSplitParam = 'openai_use-reasoning-split-param',
   /**
-   * Use provider base URL as-is for OpenAI-compatible Chat Completion APIs.
-   *
-   * Useful for gateway-style endpoints whose base path is already fully routed.
-   */
-  OpenAIUseRawBaseUrl = 'openai_use-raw-base-url',
-  /**
    * @see https://ai.google.dev/gemini-api/docs/thinking?hl=zh-cn#levels-budgets
    */
   GeminiUseThinkingLevel = 'gemini_use-thinking-level',
@@ -330,6 +340,8 @@ export const FEATURES: Record<FeatureId, Feature> = {
   },
   [FeatureId.AnthropicInterleavedThinking]: {
     supportedFamilys: [
+      'claude-opus-4-8',
+      'claude-opus-4.8',
       'claude-opus-4-7',
       'claude-opus-4.7',
       'claude-opus-4-6',
@@ -347,7 +359,12 @@ export const FEATURES: Record<FeatureId, Feature> = {
     ],
   },
   [FeatureId.AnthropicXHighEffort]: {
-    supportedFamilys: ['claude-opus-4-7', 'claude-opus-4.7'],
+    supportedFamilys: [
+      'claude-opus-4-8',
+      'claude-opus-4.8',
+      'claude-opus-4-7',
+      'claude-opus-4.7',
+    ],
   },
   [FeatureId.AnthropicWebSearch]: {
     supportedFamilys: [
@@ -383,6 +400,8 @@ export const FEATURES: Record<FeatureId, Feature> = {
   },
   [FeatureId.AnthropicContext1M]: {
     supportedFamilys: [
+      'claude-opus-4-8',
+      'claude-opus-4.8',
       'claude-opus-4-7',
       'claude-opus-4.7',
       'claude-opus-4-6',
@@ -453,6 +472,30 @@ export const FEATURES: Record<FeatureId, Feature> = {
   },
   [FeatureId.OpenAIUseReasoningParam]: {
     supportedProviders: ['openrouter.ai'],
+  },
+  [FeatureId.OpenRouterUseClaudeAdaptiveVerbosity]: {
+    customCheckers: [
+      (model, provider) =>
+        matchProvider(provider.baseUrl, 'openrouter.ai') &&
+        [
+          'claude-opus-4-8',
+          'claude-opus-4.8',
+          'claude-4-8-opus',
+          'claude-4.8-opus',
+          'claude-opus-4-7',
+          'claude-opus-4.7',
+          'claude-4-7-opus',
+          'claude-4.7-opus',
+          'claude-opus-4-6',
+          'claude-opus-4.6',
+          'claude-4-6-opus',
+          'claude-4.6-opus',
+          'claude-sonnet-4-6',
+          'claude-sonnet-4.6',
+          'claude-4-6-sonnet',
+          'claude-4.6-sonnet',
+        ].some((expected) => modelIdentityIncludes(model, expected)),
+    ],
   },
   [FeatureId.OpenAIUseReasoningDetails]: {
     supportedProviders: ['openrouter.ai', 'api.minimaxi.com', 'api.minimax.io'],
@@ -664,13 +707,6 @@ export const FEATURES: Record<FeatureId, Feature> = {
         matchModelFamily(model.family ?? getBaseModelId(model.id), [
           'minimaxai/minimax-',
         ]),
-    ],
-  },
-  [FeatureId.OpenAIUseRawBaseUrl]: {
-    supportedProviders: [
-      'api.kilo.ai/api/gateway',
-      'qianfan.baidubce.com/v2/coding',
-      'wanqing.streamlakeapi.com/api/gateway/v1/endpoints',
     ],
   },
   [FeatureId.GeminiUseThinkingLevel]: {

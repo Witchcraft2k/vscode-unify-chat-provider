@@ -3,6 +3,7 @@ import {
   isCacheControlMarker,
   isImageMarker,
   isInternalMarker,
+  isUsageMarker,
 } from '../utils';
 
 const MESSAGE_OVERHEAD_TOKENS = 4;
@@ -80,7 +81,11 @@ function collectUnknown(state: CountState, value: unknown): void {
   }
 
   if (value instanceof vscode.LanguageModelDataPart) {
-    if (isInternalMarker(value) || isCacheControlMarker(value)) {
+    if (
+      isInternalMarker(value) ||
+      isCacheControlMarker(value) ||
+      isUsageMarker(value)
+    ) {
       return;
     }
 

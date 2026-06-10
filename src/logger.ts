@@ -1,9 +1,5 @@
 import * as vscode from 'vscode';
-import type { PerformanceTrace } from './types';
-import type { BetaUsage } from '@anthropic-ai/sdk/resources/beta/messages';
-import type { CompletionUsage } from 'openai/resources/completions';
-import type { ResponseUsage } from 'openai/resources/responses/responses';
-import type { GenerateContentResponseUsageMetadata } from '@google/genai';
+import type { CopilotUsage, PerformanceTrace } from './types';
 import { CONFIG_NAMESPACE } from './config-store';
 
 const CHANNEL_NAME = 'Unify Chat Provider';
@@ -163,11 +159,7 @@ export interface ProviderHttpLogger {
   ): void;
 }
 
-export type ProviderUsage =
-  | BetaUsage
-  | CompletionUsage
-  | ResponseUsage
-  | GenerateContentResponseUsageMetadata;
+export type ProviderUsage = CopilotUsage;
 
 /**
  * A logger bound to a specific request ID for contextual logging.
@@ -337,70 +329,23 @@ export class RequestLogger implements ProviderHttpLogger {
   }
 
   /**
-   * Log usage information from provider. Always logged.
-   * @param usage Raw usage object from provider (will be JSON stringified)
+   * Log normalized usage information from provider. Always logged.
    */
   usage(usage: ProviderUsage): void {
     this.ch.info(`[${this.requestId}] Usage: ${JSON.stringify(usage)}`);
 
     try {
-      if ('cache_read_input_tokens' in usage) {
-        const cacheRead = usage.cache_read_input_tokens ?? 0;
-        const cacheCreation = usage.cache_creation_input_tokens ?? 0;
-        const uncachedInputTokens = usage.input_tokens;
-        const totalInput = cacheRead + cacheCreation + uncachedInputTokens;
-        const cacheHitRatio =
-          totalInput > 0 ? ((cacheRead / totalInput) * 100).toFixed(1) : '0.0';
-        this.ch.info(
-          `[${this.requestId}] Cache: ${cacheRead} read, ${cacheCreation} created, ${uncachedInputTokens} uncached (${cacheHitRatio}% hit ratio)`,
-        );
-        return;
-      } else if ('input_tokens_details' in usage) {
-        const cachedTokens = usage.input_tokens_details.cached_tokens ?? 0;
-        const inputTokens = usage.input_tokens;
-        const uncachedTokens = Math.max(inputTokens - cachedTokens, 0);
-        const cacheHitRatio =
-          inputTokens > 0
-            ? ((cachedTokens / inputTokens) * 100).toFixed(1)
-            : '0.0';
+      const cachedTokens = usage.prompt_tokens_details.cached_tokens;
+      const promptTokens = usage.prompt_tokens;
+      const uncachedTokens = Math.max(promptTokens - cachedTokens, 0);
+      const cacheHitRatio =
+        promptTokens > 0
+          ? ((cachedTokens / promptTokens) * 100).toFixed(2)
+          : '0.00';
 
-        this.ch.info(
-          `[${this.requestId}] Cache: ${cachedTokens} cached, ${uncachedTokens} uncached (${cacheHitRatio}% hit ratio)`,
-        );
-        return;
-      } else if (
-        'cachedContentTokenCount' in usage ||
-        'promptTokenCount' in usage
-      ) {
-        const promptTokens = usage.promptTokenCount ?? 0;
-        const cachedTokens = usage.cachedContentTokenCount ?? 0;
-        const uncachedPromptTokens = Math.max(promptTokens - cachedTokens, 0);
-        const cacheHitRatio =
-          promptTokens > 0
-            ? ((cachedTokens / promptTokens) * 100).toFixed(1)
-            : '0.0';
-
-        this.ch.info(
-          `[${this.requestId}] Cache: ${cachedTokens} cached, ${uncachedPromptTokens} uncached (${cacheHitRatio}% hit ratio)`,
-        );
-        return;
-      } else if ('total_tokens' in usage) {
-        const cachedTokens = usage.prompt_tokens_details?.cached_tokens ?? 0;
-        const promptTokens = usage.prompt_tokens;
-        const uncachedTokens = Math.max(promptTokens - cachedTokens, 0);
-        const cacheHitRatio =
-          promptTokens > 0
-            ? ((cachedTokens / promptTokens) * 100).toFixed(1)
-            : '0.0';
-
-        this.ch.info(
-          `[${this.requestId}] Cache: ${cachedTokens} cached, ${uncachedTokens} uncached (${cacheHitRatio}% hit ratio)`,
-        );
-      } else {
-        this.ch.info(
-          `[${this.requestId}] Cache: No cache usage data available.`,
-        );
-      }
+      this.ch.info(
+        `[${this.requestId}] Cache: ${cachedTokens} cached, ${uncachedTokens} uncached (${cacheHitRatio}% hit ratio)`,
+      );
     } catch (error) {
       this.ch.info(
         `[${this.requestId}] Cache: Failed to parse cache usage data: ${

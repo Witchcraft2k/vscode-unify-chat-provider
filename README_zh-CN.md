@@ -439,21 +439,70 @@ VS Code 的 Copilot Chat 本身就支持登录 GitHub Copilot 账号，所以一
 
 <details>
 
-| 名称                   | ID                                           | 介绍                                                                                   |
-| ---------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------- |
-| 全局网络设置           | `networkSettings`                            | 网络超时/重试设置，这些设置仅影响聊天请求。                                            |
-| 模型显示名称模板       | `modelDisplayNameTemplate`                   | 聊天模型名称模板。示例：`{modelName} ({modelId}) [{providerName}{remainingBalance}]`。 |
-| 余额刷新间隔           | `balanceRefreshIntervalMs`                   | 供应商余额的定时刷新间隔（毫秒）。                                                     |
-| 余额节流窗口           | `balanceThrottleWindowMs`                    | 请求后余额刷新的节流窗口（毫秒）。                                                     |
-| 在设置中存储 Api Key   | `storeApiKeyInSettings`                      | 请查看 [云同步兼容](#云同步兼容) 了解详情。                                            |
-| 启用详细日志           | `verbose`                                    | 启用更详细的日志以排查错误。                                                           |
-| 提交消息生成按钮       | `commitMessageGeneration.enableButtons`      | 控制是否在源代码管理面板显示提交消息生成按钮。                                         |
-| 提交消息生成模型       | `commitMessageGeneration.model`              | 用于提交消息生成的模型选择。                                                           |
-| 提交消息生成格式       | `commitMessageGeneration.format`             | 用于提交消息生成的提交消息格式。                                                       |
-| 提交消息生成自定义指令 | `commitMessageGeneration.customInstructions` | 追加到提交消息生成系统提示中的额外指令。                                               |
-| 提交消息生成排除文件   | `commitMessageGeneration.excludeFiles`       | 用于从提交消息生成 prompt 中省略 diff 的 VS Code glob 文件模式。                       |
+| 名称                   | ID                                           | 介绍                                                             |
+| ---------------------- | -------------------------------------------- | ---------------------------------------------------------------- |
+| 全局网络设置           | `networkSettings`                            | 全局网络设置。超时与重试影响聊天请求；代理影响供应商 HTTP 请求。 |
+| 模型显示名称模板       | `modelDisplayNameTemplate`                   | 聊天模型名称模板。默认值：`{modelName}{{ ({providerName})}}`。   |
+| 余额刷新间隔           | `balanceRefreshIntervalMs`                   | 供应商余额的定时刷新间隔（毫秒）。                               |
+| 余额节流窗口           | `balanceThrottleWindowMs`                    | 请求后余额刷新的节流窗口（毫秒）。                               |
+| 在配置中显示余额       | `displayBalanceInConfiguration`              | 在模型配置按钮区域显示已刷新的余额信息。默认关闭。               |
+| 在设置中存储 Api Key   | `storeApiKeyInSettings`                      | 请查看 [云同步兼容](#云同步兼容) 了解详情。                      |
+| 启用详细日志           | `verbose`                                    | 启用更详细的日志以排查错误。                                     |
+| 提交消息生成按钮       | `commitMessageGeneration.enableButtons`      | 控制是否在源代码管理面板显示提交消息生成按钮。                   |
+| 提交消息生成模型       | `commitMessageGeneration.model`              | 用于提交消息生成的模型选择。                                     |
+| 提交消息生成格式       | `commitMessageGeneration.format`             | 用于提交消息生成的提交消息格式。                                 |
+| 提交消息生成自定义指令 | `commitMessageGeneration.customInstructions` | 追加到提交消息生成系统提示中的额外指令。                         |
+| 提交消息生成排除文件   | `commitMessageGeneration.excludeFiles`       | 用于从提交消息生成 prompt 中省略 diff 的 VS Code glob 文件模式。 |
 
 </details>
+
+### 代理配置
+
+代理可以通过 `unifyChatProvider.networkSettings.proxy` 全局配置，也可以通过 `unifyChatProvider.endpoints[].proxy` 为单个供应商配置。实际生效顺序为：
+
+1. 供应商 `proxy`
+2. 全局 `networkSettings.proxy`
+3. VS Code HTTP 代理设置
+
+`proxy.type` 支持：
+
+- `vscode`（默认）：使用 VS Code 的 `http.proxy`、`http.proxyAuthorization`、`http.proxyStrictSSL` 和 `http.noProxy`。
+- `direct`：直连，并绕过 VS Code 与全局代理设置。
+- `custom`：使用 `proxy.url`；可选字段包括 `authorization`、`strictSSL` 和 `noProxy`。
+
+自定义代理 URL 支持 `http`、`https`、`socks`、`socks4`、`socks4a`、`socks5` 和 `socks5h` 协议。代理设置会影响供应商 HTTP 请求，包括聊天请求、余额刷新和官方模型拉取。
+
+全局代理示例：
+
+```json
+{
+  "unifyChatProvider.networkSettings": {
+    "proxy": {
+      "type": "custom",
+      "url": "http://127.0.0.1:7890",
+      "noProxy": ["localhost", "127.0.0.1", ".example.com"]
+    }
+  }
+}
+```
+
+供应商覆盖示例：
+
+```json
+{
+  "unifyChatProvider.endpoints": [
+    {
+      "type": "openai",
+      "name": "OpenAI Direct",
+      "baseUrl": "https://api.openai.com",
+      "proxy": {
+        "type": "direct"
+      },
+      "models": ["gpt-5"]
+    }
+  ]
+}
+```
 
 ### 供应商参数
 
@@ -461,31 +510,33 @@ VS Code 的 Copilot Chat 本身就支持登录 GitHub Copilot 账号，所以一
 
 以下字段对应 `ProviderConfig`（导入/导出 JSON 使用的字段名）。
 
-| 名称             | ID                        | 介绍                                                                                                                     |
-| ---------------- | ------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| API 格式         | `type`                    | 供应商类型（决定 API 格式与兼容逻辑）。                                                                                  |
-| 供应商名称       | `name`                    | 该供应商配置的唯一名称（用于列表展示与引用）。                                                                           |
-| API 基础 URL     | `baseUrl`                 | API 基础地址，例如 `https://api.anthropic.com`。                                                                         |
-| 传输模式         | `transport`               | 此供应商的首选传输模式。留空时使用供应商默认行为。                                                                       |
-| 服务层级         | `serviceTier`             | 此供应商请求的默认处理层级。                                                                                             |
-| 上下文缓存       | `contextCache`            | 上下文缓存配置（对支持 Prompt Caching 的供应商生效）。                                                                   |
-| 缓存类型         | `contextCache.type`       | `only-free`（默认）：仅在免费时使用上下文缓存。`allow-paid`：即使可能产生费用也使用。                                    |
-| 缓存 TTL（秒）   | `contextCache.ttl`        | TTL 单位秒。留空时使用供应商默认 TTL。部分供应商可能会映射到其支持的 TTL 档位；可能产生费用的档位可能需要 `allow-paid`。 |
-| 身份验证         | `auth`                    | 身份验证配置。                                                                                                           |
-| 余额监控         | `balanceProvider`         | 供应商级余额监控配置。                                                                                                   |
-| 模型列表         | `models`                  | 模型配置数组（`ModelConfig[]`）。                                                                                        |
-| 额外 Header      | `extraHeaders`            | 会附加到每次请求的 HTTP Header（`Record<string, string>`）。                                                             |
-| 额外 Body 字段   | `extraBody`               | 会附加到请求 body 的额外字段（`Record<string, unknown>`），用于对齐供应商私有参数。                                      |
-| 超时配置         | `timeout`                 | HTTP 请求与 SSE 流式的超时配置（毫秒）。                                                                                 |
-| 建连超时         | `timeout.connection`      | TCP 建立连接的最大等待时间；默认 `60000`（60 秒）。                                                                      |
-| 响应间隔超时     | `timeout.response`        | SSE 流式接收数据块之间的最大等待时间；默认 `300000`（5 分钟）。                                                          |
-| 重试配置         | `retry`                   | 临时错误的重试设置（仅 chat）。                                                                                          |
-| 最大重试次数     | `retry.maxRetries`        | 最大重试次数；默认 `10`。                                                                                                |
-| 初始延迟         | `retry.initialDelayMs`    | 首次重试前的延迟（毫秒）；默认 `1000`。                                                                                  |
-| 最大延迟         | `retry.maxDelayMs`        | 重试延迟上限（毫秒）；默认 `60000`。                                                                                     |
-| 退避倍数         | `retry.backoffMultiplier` | 指数退避倍数；默认 `2`。                                                                                                 |
-| 抖动因子         | `retry.jitterFactor`      | 抖动因子（0-1）用于随机化延迟；默认 `0.1`。                                                                              |
-| 自动拉取官方模型 | `autoFetchOfficialModels` | 是否定期从供应商 API 拉取官方模型列表并自动更新。                                                                        |
+| 名称               | ID                        | 介绍                                                                                                                     |
+| ------------------ | ------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| API 格式           | `type`                    | 供应商类型（决定 API 格式与兼容逻辑）。                                                                                  |
+| 供应商名称         | `name`                    | 该供应商配置的唯一名称（用于列表展示与引用）。                                                                           |
+| API 基础 URL       | `baseUrl`                 | API 基础地址，例如 `https://api.anthropic.com`。                                                                         |
+| 禁用自动规范化 URL | `useRawBaseUrl`           | 是否禁用自动规范化 URL，将禁用追加 `/v1` 或移除后缀等供应商特定 URL 处理。                                               |
+| 传输模式           | `transport`               | 此供应商的首选传输模式。留空时使用供应商默认行为。                                                                       |
+| 服务层级           | `serviceTier`             | 此供应商请求的默认处理层级。                                                                                             |
+| 上下文缓存         | `contextCache`            | 上下文缓存配置（对支持 Prompt Caching 的供应商生效）。                                                                   |
+| 缓存类型           | `contextCache.type`       | `only-free`（默认）：仅在免费时使用上下文缓存。`allow-paid`：即使可能产生费用也使用。                                    |
+| 缓存 TTL（秒）     | `contextCache.ttl`        | TTL 单位秒。留空时使用供应商默认 TTL。部分供应商可能会映射到其支持的 TTL 档位；可能产生费用的档位可能需要 `allow-paid`。 |
+| 身份验证           | `auth`                    | 身份验证配置。                                                                                                           |
+| 余额监控           | `balanceProvider`         | 供应商级余额监控配置。                                                                                                   |
+| 模型列表           | `models`                  | 模型配置数组（`ModelConfig[]`）。                                                                                        |
+| 额外 Header        | `extraHeaders`            | 会附加到每次请求的 HTTP Header（`Record<string, string>`）。                                                             |
+| 额外 Body 字段     | `extraBody`               | 会附加到请求 body 的额外字段（`Record<string, unknown>`），用于对齐供应商私有参数。                                      |
+| 代理配置           | `proxy`                   | 供应商级代理覆盖。请查看 [代理配置](#代理配置)。                                                                         |
+| 超时配置           | `timeout`                 | HTTP 请求与 SSE 流式的超时配置（毫秒）。                                                                                 |
+| 建连超时           | `timeout.connection`      | TCP 建立连接的最大等待时间；默认 `60000`（60 秒）。                                                                      |
+| 响应间隔超时       | `timeout.response`        | SSE 流式接收数据块之间的最大等待时间；默认 `300000`（5 分钟）。                                                          |
+| 重试配置           | `retry`                   | 临时错误的重试设置（仅 chat）。                                                                                          |
+| 最大重试次数       | `retry.maxRetries`        | 最大重试次数；默认 `10`。                                                                                                |
+| 初始延迟           | `retry.initialDelayMs`    | 首次重试前的延迟（毫秒）；默认 `1000`。                                                                                  |
+| 最大延迟           | `retry.maxDelayMs`        | 重试延迟上限（毫秒）；默认 `60000`。                                                                                     |
+| 退避倍数           | `retry.backoffMultiplier` | 指数退避倍数；默认 `2`。                                                                                                 |
+| 抖动因子           | `retry.jitterFactor`      | 抖动因子（0-1）用于随机化延迟；默认 `0.1`。                                                                              |
+| 自动拉取官方模型   | `autoFetchOfficialModels` | 是否定期从供应商 API 拉取官方模型列表并自动更新。                                                                        |
 
 </details>
 
@@ -495,51 +546,50 @@ VS Code 的 Copilot Chat 本身就支持登录 GitHub Copilot 账号，所以一
 
 以下字段对应 `ModelConfig`（导入/导出 JSON 使用的字段名）。
 
-| 名称              | ID                         | 介绍                                                                                                                                                                                                                                                          |
-| ----------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 模型 ID           | `id`                       | 模型标识（可使用 `#xxx` 后缀创建同一模型的多份配置；发送请求时会自动移除后缀）。                                                                                                                                                                              |
-| 显示名称          | `name`                     | UI 展示用名称（未填写时通常显示 `id`）。                                                                                                                                                                                                                      |
-| 模型家族          | `family`                   | 便于分组/匹配的一类模型标识（如 `gpt-4`、`claude-3`）。                                                                                                                                                                                                       |
-| 最大输入 Tokens   | `maxInputTokens`           | 最大输入/上下文 tokens（部分供应商语义为“输入+输出”总上下文）。                                                                                                                                                                                               |
-| 最大输出 Tokens   | `maxOutputTokens`          | 最大生成 tokens（部分供应商要求必填，如 Anthropic 的 `max_tokens`）。                                                                                                                                                                                         |
-| 分词器            | `tokenizer`                | 用于 VS Code Token 计数（`provideTokenCount`）的分词器。默认：`default`。                                                                                                                                                                                     |
-| Token 计数倍率    | `tokenCountMultiplier`     | 在返回给 VS Code 前，对 Token 计数结果乘以该倍率。默认：`1.0`。                                                                                                                                                                                               |
-| 模型能力          | `capabilities`             | 能力声明（用于 UI 与路由逻辑判断，部分场景也会影响请求构造）。                                                                                                                                                                                                |
-| 工具调用能力      | `capabilities.toolCalling` | 是否支持工具/函数调用；若为数字则表示最多工具数量。                                                                                                                                                                                                           |
-| 图片输入能力      | `capabilities.imageInput`  | 是否支持图像输入。                                                                                                                                                                                                                                            |
-| 编辑工具提示      | `capabilities.editTools`   | VS Code / Copilot Chat 的编辑工具提示。                                                                                                                                                                                                                       |
-| 流式输出          | `stream`                   | 是否启用流式响应（未设置则使用默认行为）。                                                                                                                                                                                                                    |
-| Temperature       | `temperature`              | 采样温度（随机性）。                                                                                                                                                                                                                                          |
-| Top-K             | `topK`                     | Top-k 采样。                                                                                                                                                                                                                                                  |
-| Top-P             | `topP`                     | Top-p（nucleus）采样。                                                                                                                                                                                                                                        |
-| Frequency Penalty | `frequencyPenalty`         | 频率惩罚。                                                                                                                                                                                                                                                    |
-| Presence Penalty  | `presencePenalty`          | 存在惩罚。                                                                                                                                                                                                                                                    |
-| 并行工具调用      | `parallelToolCalling`      | 是否允许并行工具调用（`true` 开启、`false` 禁用、`undefined` 使用默认）。                                                                                                                                                                                     |
-| 服务层级          | `serviceTier`              | 官方 OpenAI / Anthropic 请求的处理层级。`auto` 表示让供应商自动选择；`standard` 会映射到 OpenAI 的 `default` 与 Anthropic 的 `standard_only`；`flex` / `scale` / `priority` 仅对 OpenAI 原生支持，对 Anthropic 会回退到 `standard_only`。留空表示省略该字段。 |
-| 回复冗长度        | `verbosity`                | 约束回答冗长程度：`low` / `medium` / `high`（并非所有供应商支持）。                                                                                                                                                                                           |
-| 思考配置          | `thinking`                 | 思考/推理相关配置（不同供应商支持程度不同）。                                                                                                                                                                                                                 |
-| 思考模式          | `thinking.type`            | `enabled` / `disabled` / `auto`                                                                                                                                                                                                                               |
-| 思考预算 Tokens   | `thinking.budgetTokens`    | 思考 token 预算。                                                                                                                                                                                                                                             |
-| 思考强度          | `thinking.effort`          | `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`                                                                                                                                                                                              |
-| 推理摘要          | `thinking.summary`         | 推理 / 思考摘要模式：`none` / `auto` / `concise` / `detailed`                                                                                                                                                                                                 |
-| 额外 Header       | `extraHeaders`             | 会附加到该模型请求的 HTTP Header（`Record<string, string>`）。                                                                                                                                                                                                |
-| 额外 Body 字段    | `extraBody`                | 会附加到该模型请求 body 的额外字段（`Record<string, unknown>`）。                                                                                                                                                                                             |
-| 预设模板          | `presetTemplates`          | 配置的预设模板可以通过 VS Code 模型二级菜单选择，每个模板对应一组枚举选项，按模板声明顺序依次应用，后面的模板会覆盖前面的同名字段。                                                                                                                           |
+| 名称              | ID                         | 介绍                                                                                                                                                                                                                                                                                                               |
+| ----------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 模型 ID           | `id`                       | 模型标识（可使用 `#xxx` 后缀创建同一模型的多份配置；发送请求时会自动移除后缀）。                                                                                                                                                                                                                                   |
+| 显示名称          | `name`                     | UI 展示用名称（未填写时通常显示 `id`）。                                                                                                                                                                                                                                                                           |
+| 模型家族          | `family`                   | 便于分组/匹配的一类模型标识（如 `gpt-4`、`claude-3`）。                                                                                                                                                                                                                                                            |
+| 最大输入 Tokens   | `maxInputTokens`           | 最大输入/上下文 tokens（部分供应商语义为“输入+输出”总上下文）。                                                                                                                                                                                                                                                    |
+| 最大输出 Tokens   | `maxOutputTokens`          | 最大生成 tokens（部分供应商要求必填，如 Anthropic 的 `max_tokens`）。                                                                                                                                                                                                                                              |
+| 分词器            | `tokenizer`                | 用于 VS Code Token 计数（`provideTokenCount`）的分词器。默认：`default`。                                                                                                                                                                                                                                          |
+| Token 计数倍率    | `tokenCountMultiplier`     | 在返回给 VS Code 前，对 Token 计数结果乘以该倍率。默认：`1.0`。                                                                                                                                                                                                                                                    |
+| 模型能力          | `capabilities`             | 能力声明（用于 UI 与路由逻辑判断，部分场景也会影响请求构造）。                                                                                                                                                                                                                                                     |
+| 工具调用能力      | `capabilities.toolCalling` | 是否支持工具/函数调用；若为数字则表示最多工具数量。                                                                                                                                                                                                                                                                |
+| 图片输入能力      | `capabilities.imageInput`  | 是否支持图像输入。                                                                                                                                                                                                                                                                                                 |
+| 编辑工具提示      | `capabilities.editTools`   | VS Code / Copilot Chat 的编辑工具提示。                                                                                                                                                                                                                                                                            |
+| 流式输出          | `stream`                   | 是否启用流式响应（未设置则使用默认行为）。                                                                                                                                                                                                                                                                         |
+| Temperature       | `temperature`              | 采样温度（随机性）。                                                                                                                                                                                                                                                                                               |
+| Top-K             | `topK`                     | Top-k 采样。                                                                                                                                                                                                                                                                                                       |
+| Top-P             | `topP`                     | Top-p（nucleus）采样。                                                                                                                                                                                                                                                                                             |
+| Frequency Penalty | `frequencyPenalty`         | 频率惩罚。                                                                                                                                                                                                                                                                                                         |
+| Presence Penalty  | `presencePenalty`          | 存在惩罚。                                                                                                                                                                                                                                                                                                         |
+| 并行工具调用      | `parallelToolCalling`      | 是否允许并行工具调用（`true` 开启、`false` 禁用、`undefined` 使用默认）。                                                                                                                                                                                                                                          |
+| 服务层级          | `serviceTier`              | OpenAI / Anthropic 请求的处理层级或速度预设。`auto` 表示让供应商自动选择；`standard` 会映射到 OpenAI 的 `default` 与 Anthropic 的 `standard_only`；`flex` / `scale` 会映射到 OpenAI 对应层级与 Anthropic 的 `standard_only`；`priority` 会映射到 OpenAI Priority Tier 与 Anthropic Fast mode。留空表示省略该字段。 |
+| 回复冗长度        | `verbosity`                | 约束回答冗长程度：`low` / `medium` / `high`（并非所有供应商支持）。                                                                                                                                                                                                                                                |
+| 思考配置          | `thinking`                 | 思考/推理相关配置（不同供应商支持程度不同）。                                                                                                                                                                                                                                                                      |
+| 思考模式          | `thinking.type`            | `enabled` / `disabled` / `auto`                                                                                                                                                                                                                                                                                    |
+| 思考预算 Tokens   | `thinking.budgetTokens`    | 思考 token 预算。                                                                                                                                                                                                                                                                                                  |
+| 思考强度          | `thinking.effort`          | `none` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max`                                                                                                                                                                                                                                                   |
+| 推理摘要          | `thinking.summary`         | 推理 / 思考摘要模式：`none` / `auto` / `concise` / `detailed`                                                                                                                                                                                                                                                      |
+| 额外 Header       | `extraHeaders`             | 会附加到该模型请求的 HTTP Header（`Record<string, string>`）。                                                                                                                                                                                                                                                     |
+| 额外 Body 字段    | `extraBody`                | 会附加到该模型请求 body 的额外字段（`Record<string, unknown>`）。                                                                                                                                                                                                                                                  |
+| 预设模板          | `presetTemplates`          | 配置的预设模板可以通过 VS Code 模型二级菜单选择，每个模板对应一组枚举选项，按模板声明顺序依次应用，后面的模板会覆盖前面的同名字段。                                                                                                                                                                                |
 
 ### 服务层级说明
 
-- 仅当供应商 `baseUrl` 是官方 OpenAI 或 Anthropic 接口时，扩展才会自动发送 `service_tier`。
-- 留空 `serviceTier` 表示不发送 `service_tier` 字段，保持供应商默认行为。
-- 官方 OpenAI API 的映射关系：
+- 留空 `serviceTier` 表示不发送服务层级 / 速度字段，保持供应商默认行为。
+- OpenAI API 的映射关系：
   - `auto` -> `auto`
   - `standard` -> `default`
   - `flex` -> `flex`
   - `scale` -> `scale`
   - `priority` -> `priority`
-- 官方 Anthropic API 的映射关系：
+- Anthropic Messages API 的映射关系：
   - `auto` -> `auto`
-  - `standard` / `flex` / `scale` / `priority` -> `standard_only`
-- 对于非官方中转、代理或兼容接口，扩展不会自动注入 `service_tier`，因为不同供应商的语义可能并不一致。
+  - `standard` / `flex` / `scale` -> `standard_only`
+  - `priority` -> `speed: "fast"`，并携带 `fast-mode-2026-02-01`
 
 ### 预设模板说明
 
@@ -686,61 +736,61 @@ vscode://SmallMain.vscode-unify-chat-provider/import-config?config=<input>&auth=
 
 <details>
 
-| 供应商                                                                                    | 支持特性                                                        | 免费额度              | 余额监控 |
-| :---------------------------------------------------------------------------------------- | --------------------------------------------------------------- | --------------------- | :------: |
-| [Open AI](https://openai.com/)                                                            |                                                                 |                       |
-| [Google AI Studio](https://aistudio.google.com/)                                          |                                                                 |                       |
-| [Google Vertex AI](https://cloud.google.com/vertex-ai)                                    | <li>Authentication                                              |                       |
-| [Anthropic](https://www.anthropic.com/)                                                   | <li>InterleavedThinking <li>FineGrainedToolStreaming            |                       |
-| [xAI](https://docs.x.ai/)                                                                 |                                                                 |                       |
-| [Hugging Face (Inference Providers)](https://huggingface.co/docs/inference-providers)     |                                                                 |                       |
-| [OpenRouter](https://openrouter.ai/)                                                      | <li>CacheControl <li>ReasoningParam <li>ReasoningDetails        | [详情](#openrouter)   |    ✅    |
-| [AIHubMix](https://aihubmix.com/)                                                         |                                                                 |                       |    ✅    |
-| [Cerebras](https://www.cerebras.ai/)                                                      | <li>ReasoningField <li>DisableReasoningParam <li>ClearThinking  | [详情](#cerebras)     |
-| [OpenCode Zen (OpenAI Chat Completion)](https://opencode.ai/)                             | <li>ReasoningContent                                            | [详情](#opencode-zen) |
-| [OpenCode Zen (OpenAI Responses)](https://opencode.ai/)                                   | <li>ReasoningContent                                            | [详情](#opencode-zen) |
-| [OpenCode Zen (Anthropic Messages)](https://opencode.ai/)                                 | <li>InterleavedThinking <li>FineGrainedToolStreaming            | [详情](#opencode-zen) |
-| [OpenCode Zen (Gemini)](https://opencode.ai/)                                             |                                                                 | [详情](#opencode-zen) |
-| [OpenCode Go (OpenAI Chat Completion)](https://opencode.ai/)                              | <li>ReasoningContent                                            | [详情](#opencode-go)  |
-| [OpenCode Go (Anthropic Messages)](https://opencode.ai/)                                  | <li>InterleavedThinking <li>FineGrainedToolStreaming            | [详情](#opencode-go)  |
-| [英伟达](https://build.nvidia.com/)                                                       |                                                                 | [详情](#英伟达)       |
-| [Kilo Code](https://kilo.ai/)                                                             | <li>RawBaseUrl                                                  | [详情](#kilo-code)    |
-| [阿里云百炼平台 (中国站)](https://www.aliyun.com/product/bailian)                         | <li>ThinkingParam3 <li>ReasoningContent                         |                       |
-| [阿里云百炼平台 (Coding Plan)](https://www.aliyun.com/product/bailian)                    | <li>ThinkingParam3 <li>ReasoningContent                         |                       |
-| [阿里云百炼平台 (国际站, Coding Plan)](https://www.alibabacloud.com/help/en/model-studio) | <li>ThinkingParam3 <li>ReasoningContent                         |                       |
-| [阿里云百炼平台 (国际站)](https://www.alibabacloud.com/help/en/model-studio)              | <li>ThinkingParam3 <li>ReasoningContent                         |                       |
-| [魔搭社区 (API-Inference)](https://modelscope.cn/)                                        | <li>ThinkingParam3 <li>ReasoningContent                         | [详情](#魔搭社区)     |
-| [Cline Bot](https://docs.cline.bot/api/overview)                                          |                                                                 | [详情](#cline-bot)    |
-| [火山引擎](https://www.volcengine.com/product/ark)                                        | <li>AutoThinking <li>ThinkingParam2 <li>VolcContextCaching      | [详情](#火山引擎)     |
-| [火山引擎 (Coding Plan)](https://www.volcengine.com/activity/codingplan)                  | <li>AutoThinking <li>ThinkingParam2                             |                       |
-| [Byte Plus](https://www.byteplus.com/en/product/modelark)                                 | <li>AutoThinking <li>ThinkingParam2 <li>VolcContextCaching      |                       |
-| [腾讯云 (中国站)](https://cloud.tencent.com/product/hunyuan)                              |                                                                 |                       |
-| [DeepSeek](https://www.deepseek.com/)                                                     | <li>ThinkingParam <li>ReasoningEffortParam <li>ReasoningContent |                       |    ✅    |
-| [模力方舟](https://ai.gitee.com/)                                                         |                                                                 |                       |
-| [Xiaomi MIMO](https://mimo.xiaomi.com/)                                                   | <li>ThinkingParam <li>ReasoningContent                          |                       |
-| [Xiaomi MIMO (中国站, Token Plan)](https://mimo.xiaomi.com/)                              | <li>ThinkingParam <li>ReasoningContent                          |                       |
-| [Xiaomi MIMO (新加坡站, Token Plan)](https://mimo.xiaomi.com/)                            | <li>ThinkingParam <li>ReasoningContent                          |                       |
-| [Xiaomi MIMO (欧洲站, Token Plan)](https://mimo.xiaomi.com/)                              | <li>ThinkingParam <li>ReasoningContent                          |                       |
-| [Ollama Local](https://ollama.com/)                                                       |                                                                 |                       |
-| [Ollama Cloud](https://ollama.com/)                                                       |                                                                 |                       |
-| [阶跃星辰 (中国站)](https://platform.stepfun.com/)                                        | <li>ReasoningField                                              |                       |
-| [阶跃星辰 (国际站)](https://platform.stepfun.com/)                                        | <li>ReasoningField                                              |                       |
-| [智谱 AI](https://open.bigmodel.cn/)                                                      | <li>ThinkingParam <li>ReasoningContent <li>ClearThinking        | [详情](#智谱-ai--zai) |
-| [智谱 AI (Coding Plan)](https://open.bigmodel.cn/)                                        | <li>ThinkingParam <li>ReasoningContent <li>ClearThinking        |                       |
-| [Z.AI](https://z.ai/)                                                                     | <li>ThinkingParam <li>ReasoningContent <li>ClearThinking        | [详情](#智谱-ai--zai) |
-| [Z.AI (Coding Plan)](https://z.ai/)                                                       | <li>ThinkingParam <li>ReasoningContent <li>ClearThinking        |                       |
-| [MiniMax (中国站)](https://www.minimaxi.com/)                                             | <li>ReasoningDetails                                            |                       |
-| [MiniMax (国际站)](https://www.minimax.io/)                                               | <li>ReasoningDetails                                            |                       |
-| [LongCat](https://longcat.chat/)                                                          |                                                                 | [详情](#longcat)      |
-| [Moonshot AI (中国站)](https://www.moonshot.cn/)                                          | <li>ReasoningContent                                            |                       |    ✅    |
-| [Moonshot AI (国际站)](https://www.moonshot.ai/)                                          | <li>ReasoningContent                                            |                       |    ✅    |
-| [Moonshot AI (Coding Plan)](https://www.kimi.com/coding)                                  | <li>ReasoningContent                                            |                       |    ✅    |
-| [快手万擎 (中国站)](https://streamlake.com/)                                              |                                                                 | [详情](#快手万擎)     |
-| [快手万擎 (中国站, Coding Plan)](https://streamlake.com/)                                 |                                                                 |                       |
-| [快手万擎 (国际站)](https://www.streamlake.ai/)                                           |                                                                 | [详情](#快手万擎)     |
-| [快手万擎 (国际站, Coding Plan)](https://www.streamlake.ai/)                              |                                                                 |                       |
-| [硅基流动 (中国站)](https://siliconflow.cn/)                                              | <li>ThinkingParam3 <li>ThinkingBudgetParam <li>ReasoningContent | [详情](#硅基流动)     |    ✅    |
-| [硅基流动 (国际站)](https://siliconflow.com/)                                             | <li>ThinkingParam3 <li>ThinkingBudgetParam <li>ReasoningContent | [详情](#硅基流动)     |    ✅    |
+| 供应商                                                                                    | 支持特性                                                                             | 免费额度              | 余额监控 |
+| :---------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ | --------------------- | :------: |
+| [Open AI](https://openai.com/)                                                            |                                                                                      |                       |
+| [Google AI Studio](https://aistudio.google.com/)                                          |                                                                                      |                       |
+| [Google Vertex AI](https://cloud.google.com/vertex-ai)                                    | <li>Authentication                                                                   |                       |
+| [Anthropic](https://www.anthropic.com/)                                                   | <li>InterleavedThinking <li>FineGrainedToolStreaming                                 |                       |
+| [xAI](https://docs.x.ai/)                                                                 |                                                                                      |                       |
+| [Hugging Face (Inference Providers)](https://huggingface.co/docs/inference-providers)     |                                                                                      |                       |
+| [OpenRouter](https://openrouter.ai/)                                                      | <li>CacheControl <li>ReasoningParam <li>ReasoningDetails <li>ClaudeAdaptiveVerbosity | [详情](#openrouter)   |    ✅    |
+| [AIHubMix](https://aihubmix.com/)                                                         |                                                                                      |                       |    ✅    |
+| [Cerebras](https://www.cerebras.ai/)                                                      | <li>ReasoningField <li>DisableReasoningParam <li>ClearThinking                       | [详情](#cerebras)     |
+| [OpenCode Zen (OpenAI Chat Completion)](https://opencode.ai/)                             | <li>ReasoningContent                                                                 | [详情](#opencode-zen) |
+| [OpenCode Zen (OpenAI Responses)](https://opencode.ai/)                                   | <li>ReasoningContent                                                                 | [详情](#opencode-zen) |
+| [OpenCode Zen (Anthropic Messages)](https://opencode.ai/)                                 | <li>InterleavedThinking <li>FineGrainedToolStreaming                                 | [详情](#opencode-zen) |
+| [OpenCode Zen (Gemini)](https://opencode.ai/)                                             |                                                                                      | [详情](#opencode-zen) |
+| [OpenCode Go (OpenAI Chat Completion)](https://opencode.ai/)                              | <li>ReasoningContent                                                                 | [详情](#opencode-go)  |
+| [OpenCode Go (Anthropic Messages)](https://opencode.ai/)                                  | <li>InterleavedThinking <li>FineGrainedToolStreaming                                 | [详情](#opencode-go)  |
+| [英伟达](https://build.nvidia.com/)                                                       |                                                                                      | [详情](#英伟达)       |
+| [Kilo Code](https://kilo.ai/)                                                             | <li>RawBaseUrl                                                                       | [详情](#kilo-code)    |
+| [阿里云百炼平台 (中国站)](https://www.aliyun.com/product/bailian)                         | <li>ThinkingParam3 <li>ReasoningContent                                              |                       |
+| [阿里云百炼平台 (Coding Plan)](https://www.aliyun.com/product/bailian)                    | <li>ThinkingParam3 <li>ReasoningContent                                              |                       |
+| [阿里云百炼平台 (国际站, Coding Plan)](https://www.alibabacloud.com/help/en/model-studio) | <li>ThinkingParam3 <li>ReasoningContent                                              |                       |
+| [阿里云百炼平台 (国际站)](https://www.alibabacloud.com/help/en/model-studio)              | <li>ThinkingParam3 <li>ReasoningContent                                              |                       |
+| [魔搭社区 (API-Inference)](https://modelscope.cn/)                                        | <li>ThinkingParam3 <li>ReasoningContent                                              | [详情](#魔搭社区)     |
+| [Cline Bot](https://docs.cline.bot/api/overview)                                          |                                                                                      | [详情](#cline-bot)    |
+| [火山引擎](https://www.volcengine.com/product/ark)                                        | <li>AutoThinking <li>ThinkingParam2 <li>VolcContextCaching                           | [详情](#火山引擎)     |
+| [火山引擎 (Coding Plan)](https://www.volcengine.com/activity/codingplan)                  | <li>AutoThinking <li>ThinkingParam2                                                  |                       |
+| [Byte Plus](https://www.byteplus.com/en/product/modelark)                                 | <li>AutoThinking <li>ThinkingParam2 <li>VolcContextCaching                           |                       |
+| [腾讯云 (中国站)](https://cloud.tencent.com/product/hunyuan)                              |                                                                                      |                       |
+| [DeepSeek](https://www.deepseek.com/)                                                     | <li>ThinkingParam <li>ReasoningEffortParam <li>ReasoningContent                      |                       |    ✅    |
+| [模力方舟](https://ai.gitee.com/)                                                         |                                                                                      |                       |
+| [Xiaomi MIMO](https://mimo.xiaomi.com/)                                                   | <li>ThinkingParam <li>ReasoningContent                                               |                       |
+| [Xiaomi MIMO (中国站, Token Plan)](https://mimo.xiaomi.com/)                              | <li>ThinkingParam <li>ReasoningContent                                               |                       |
+| [Xiaomi MIMO (新加坡站, Token Plan)](https://mimo.xiaomi.com/)                            | <li>ThinkingParam <li>ReasoningContent                                               |                       |
+| [Xiaomi MIMO (欧洲站, Token Plan)](https://mimo.xiaomi.com/)                              | <li>ThinkingParam <li>ReasoningContent                                               |                       |
+| [Ollama Local](https://ollama.com/)                                                       |                                                                                      |                       |
+| [Ollama Cloud](https://ollama.com/)                                                       |                                                                                      |                       |
+| [阶跃星辰 (中国站)](https://platform.stepfun.com/)                                        | <li>ReasoningField                                                                   |                       |
+| [阶跃星辰 (国际站)](https://platform.stepfun.com/)                                        | <li>ReasoningField                                                                   |                       |
+| [智谱 AI](https://open.bigmodel.cn/)                                                      | <li>ThinkingParam <li>ReasoningContent <li>ClearThinking                             | [详情](#智谱-ai--zai) |
+| [智谱 AI (Coding Plan)](https://open.bigmodel.cn/)                                        | <li>ThinkingParam <li>ReasoningContent <li>ClearThinking                             |                       |
+| [Z.AI](https://z.ai/)                                                                     | <li>ThinkingParam <li>ReasoningContent <li>ClearThinking                             | [详情](#智谱-ai--zai) |
+| [Z.AI (Coding Plan)](https://z.ai/)                                                       | <li>ThinkingParam <li>ReasoningContent <li>ClearThinking                             |                       |
+| [MiniMax (中国站)](https://www.minimaxi.com/)                                             | <li>ReasoningDetails                                                                 |                       |
+| [MiniMax (国际站)](https://www.minimax.io/)                                               | <li>ReasoningDetails                                                                 |                       |
+| [LongCat](https://longcat.chat/)                                                          |                                                                                      | [详情](#longcat)      |
+| [Moonshot AI (中国站)](https://www.moonshot.cn/)                                          | <li>ReasoningContent                                                                 |                       |    ✅    |
+| [Moonshot AI (国际站)](https://www.moonshot.ai/)                                          | <li>ReasoningContent                                                                 |                       |    ✅    |
+| [Moonshot AI (Coding Plan)](https://www.kimi.com/coding)                                  | <li>ReasoningContent                                                                 |                       |    ✅    |
+| [快手万擎 (中国站)](https://streamlake.com/)                                              |                                                                                      | [详情](#快手万擎)     |
+| [快手万擎 (中国站, Coding Plan)](https://streamlake.com/)                                 |                                                                                      |                       |
+| [快手万擎 (国际站)](https://www.streamlake.ai/)                                           |                                                                                      | [详情](#快手万擎)     |
+| [快手万擎 (国际站, Coding Plan)](https://www.streamlake.ai/)                              |                                                                                      |                       |
+| [硅基流动 (中国站)](https://siliconflow.cn/)                                              | <li>ThinkingParam3 <li>ThinkingBudgetParam <li>ReasoningContent                      | [详情](#硅基流动)     |    ✅    |
+| [硅基流动 (国际站)](https://siliconflow.com/)                                             | <li>ThinkingParam3 <li>ThinkingBudgetParam <li>ReasoningContent                      | [详情](#硅基流动)     |    ✅    |
 
 实验性支持的供应商：
 
@@ -885,7 +935,7 @@ vscode://SmallMain.vscode-unify-chat-provider/import-config?config=<input>&auth=
 |                  | Gemini 2.5 系列     | gemini-2.5-pro, gemini-2.5-flash, gemini-2.5-flash-lite                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 |                  | Gemini 2.0 系列     | gemini-2.0-flash, gemini-2.0-flash-lite                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 |                  | Gemma 4 系列        | Gemma 4 31B, Gemma 4 26B A4B, Gemma 4 E4B, Gemma 4 E2B                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| **Anthropic**    | Claude 4 系列       | Claude Opus 4.7, Claude Opus 4.6, Claude Sonnet 4.6, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.5, Claude Sonnet 4, Claude Opus 4.1, Claude Opus 4                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| **Anthropic**    | Claude 4 系列       | Claude Opus 4.8, Claude Opus 4.7, Claude Opus 4.6, Claude Sonnet 4.6, Claude Sonnet 4.5, Claude Haiku 4.5, Claude Opus 4.5, Claude Sonnet 4, Claude Opus 4.1, Claude Opus 4                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 |                  | Claude 3 系列       | Claude Sonnet 3.7, Claude Sonnet 3.5, Claude Haiku 3.5, Claude Haiku 3, Claude Opus 3                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | **xAI**          | Grok 4.20 系列      | Grok 4.20 0309 (Reasoning), Grok 4.20 0309 (Non-Reasoning)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 |                  | Grok 4 系列         | Grok 4.1 Fast (Reasoning), Grok 4.1 Fast (Non-Reasoning), Grok 4, Grok 4 Fast (Reasoning), Grok 4 Fast (Non-Reasoning)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |

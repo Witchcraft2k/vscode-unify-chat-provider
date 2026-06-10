@@ -6,7 +6,12 @@ import {
 } from './defaults';
 import { ApiProvider } from './client/interface';
 import { createRequestLogger } from './logger';
-import { ModelConfig, PerformanceTrace, ProviderConfig } from './types';
+import {
+  ChatRequestTrace,
+  ModelConfig,
+  PerformanceTrace,
+  ProviderConfig,
+} from './types';
 import { getBaseModelId } from './model-id-utils';
 import { createProvider } from './client/utils';
 import {
@@ -19,6 +24,7 @@ import {
   delay,
   getAllModelsForProvider,
   getAllModelsForProviderSync,
+  createUsageDataPart,
   isAbortLikeError,
   isPlaceholderModelId,
   resolveMeaningfulError,
@@ -39,18 +45,20 @@ import {
   resolveTokenCountMultiplier,
   resolveTokenizerId,
 } from './tokenizer/tokenizers';
-import type { BalanceManager } from './balance';
+import {
+  formatPrimaryBadge,
+  formatSummaryLine,
+  formatSnapshotLines,
+  type BalanceManager,
+  type BalanceProviderState,
+} from './balance';
 import { evaluateBalanceWarning } from './balance/warning-utils';
 import { resolveConfiguredEditToolsForVsCode } from './model-capabilities';
-import {
-  clearContextWindowRequest,
-  reportProgressWithContextWindowRequest,
-  setContextWindowOutputBufferForRequest,
-} from './context-window-hook-bridge';
-import type { ProviderType } from './client/definitions';
+import { getProviderPickerDisplayName } from './language-model-vendors';
 
 const MODEL_DISPLAY_NAME_PLACEHOLDER_PATTERN =
   /\{(modelId|modelName|modelFamily|providerName|remainingBalance)\}/g;
+const BALANCE_CONFIGURATION_KEY = '__unifyBalance';
 
 interface ModelDisplayNameTemplateValues {
   modelId: string;
@@ -58,6 +66,18 @@ interface ModelDisplayNameTemplateValues {
   modelFamily: string;
   providerName: string;
   remainingBalance: string;
+}
+
+interface ModelInfoDraft {
+  provider: ProviderConfig;
+  model: ModelConfig;
+  resolvedModelName: string;
+}
+
+interface BalanceConfigurationOption {
+  id: string;
+  label: string;
+  description: string;
 }
 
 export class UnifyChatService implements vscode.LanguageModelChatProvider {
@@ -73,7 +93,6 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     private readonly secretStore: SecretStore,
     private readonly authManager?: AuthManager,
     private readonly balanceManager?: BalanceManager,
-    private readonly providerTypeFilter?: ProviderType,
   ) {}
 
   /**
@@ -83,11 +102,8 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     options: { silent: boolean },
     _token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelChatInformation[]> {
-    const configuredProviders = this.configStore.endpoints;
-    const visibleProviders = this.getVisibleProviders(configuredProviders);
-
     // Check if user has configured any providers with models or auto-fetch enabled
-    const hasConfiguredProviders = configuredProviders.some(
+    const hasConfiguredProviders = this.configStore.endpoints.some(
       (provider) =>
         provider.models.length > 0 || provider.autoFetchOfficialModels,
     );
@@ -98,17 +114,30 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     }
 
     // Build model list synchronously
-    const models: vscode.LanguageModelChatInformation[] = [];
+    const modelDrafts: ModelInfoDraft[] = [];
+    const modelNameCounts = new Map<string, number>();
 
-    for (const provider of visibleProviders) {
+    for (const provider of this.configStore.endpoints) {
       const allModels = getAllModelsForProviderSync(provider);
 
       for (const model of allModels) {
-        models.push(this.createModelInfo(provider, model));
+        const resolvedModelName = model.name ?? model.id;
+        modelDrafts.push({ provider, model, resolvedModelName });
+        modelNameCounts.set(
+          resolvedModelName,
+          (modelNameCounts.get(resolvedModelName) ?? 0) + 1,
+        );
       }
     }
 
-    return models;
+    return modelDrafts.map((draft) =>
+      this.createModelInfo(
+        draft.provider,
+        draft.model,
+        draft.resolvedModelName,
+        (modelNameCounts.get(draft.resolvedModelName) ?? 0) > 1,
+      ),
+    );
   }
 
   /**
@@ -117,26 +146,33 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
   private createModelInfo(
     provider: ProviderConfig,
     model: ModelConfig,
+    resolvedModelName: string,
+    hasDuplicateModelName: boolean,
   ): vscode.LanguageModelChatInformation {
     const modelId = this.createModelId(provider.name, model.id);
-    const resolvedModelName = model.name ?? model.id;
     const resolvedModelFamily = model.family ?? getBaseModelId(model.id);
-    const balanceSnapshot = this.balanceManager?.getProviderState(
+    const providerDisplayName = getProviderPickerDisplayName(provider.name);
+    const balanceState = this.balanceManager?.getProviderState(
       provider.name,
-    )?.snapshot;
+    );
+    const balanceSnapshot = balanceState?.snapshot;
     const remainingBalance =
       formatProviderBadgeSuffixForModelSelection(balanceSnapshot);
-    const displayName = this.renderModelDisplayName({
-      modelId: model.id,
-      modelName: resolvedModelName,
-      modelFamily: resolvedModelFamily,
-      providerName: provider.name,
-      remainingBalance,
-    });
+    const displayName = this.renderModelDisplayName(
+      {
+        modelId: model.id,
+        modelName: resolvedModelName,
+        modelFamily: resolvedModelFamily,
+        providerName: providerDisplayName,
+        remainingBalance,
+      },
+      hasDuplicateModelName,
+    );
     const detail = formatProviderDetailForModelSelection(
-      provider.name,
+      providerDisplayName,
       balanceSnapshot,
     );
+    const pricing = formatPrimaryBadge(balanceSnapshot)?.trim();
     const tooltip = formatModelTooltipForModelSelection(
       provider,
       model,
@@ -164,6 +200,10 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
             imageInput: model.capabilities?.imageInput ?? false,
             editTools,
           };
+    const configurationSchema = this.buildModelConfigurationSchema(
+      model,
+      balanceState,
+    );
 
     return {
       id: modelId,
@@ -174,27 +214,228 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       maxOutputTokens: model.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
       capabilities,
       category: {
-        label: provider.name,
+        label: providerDisplayName,
         order: 2,
       },
       detail,
       tooltip,
       isUserSelectable: true,
       statusIcon,
-      configurationSchema: buildPresetTemplateConfigurationSchema(model),
+      ...(configurationSchema ? { configurationSchema } : {}),
+      multiplierNumeric: 1,
+      pricing,
     };
+  }
+
+  private buildModelConfigurationSchema(
+    model: ModelConfig,
+    balanceState: BalanceProviderState | undefined,
+  ): vscode.LanguageModelConfigurationSchema | undefined {
+    const properties: Record<string, Record<string, unknown>> = {
+      ...(buildPresetTemplateConfigurationSchema(model)?.properties ?? {}),
+    };
+    const balanceProperty =
+      this.buildBalanceConfigurationProperty(balanceState);
+    if (
+      balanceProperty &&
+      properties[BALANCE_CONFIGURATION_KEY] === undefined &&
+      !this.hasConfigurationGroup(properties, 'tokens')
+    ) {
+      properties[BALANCE_CONFIGURATION_KEY] = balanceProperty;
+    }
+
+    return Object.keys(properties).length > 0 ? { properties } : undefined;
+  }
+
+  private hasConfigurationGroup(
+    properties: Record<string, Record<string, unknown>>,
+    group: string,
+  ): boolean {
+    return Object.values(properties).some(
+      (property) => property['group'] === group,
+    );
+  }
+
+  private buildBalanceConfigurationProperty(
+    state: BalanceProviderState | undefined,
+  ): Record<string, unknown> | undefined {
+    if (!this.configStore.displayBalanceInConfiguration) {
+      return undefined;
+    }
+
+    const options = this.buildBalanceConfigurationOptions(state);
+    if (options.length === 0) {
+      return undefined;
+    }
+
+    return {
+      type: 'string',
+      title: 'Balance',
+      enum: options.map((option) => option.id),
+      enumItemLabels: options.map((option) => option.label),
+      enumDescriptions: options.map((option) => option.description),
+      default: options[0].id,
+      group: 'tokens',
+    };
+  }
+
+  private buildBalanceConfigurationOptions(
+    state: BalanceProviderState | undefined,
+  ): BalanceConfigurationOption[] {
+    const snapshot = state?.snapshot;
+    const primaryOption = this.buildPrimaryBalanceConfigurationOption(state);
+    const options = formatSnapshotLines(snapshot).map((line, index) => {
+      const { label, description } = this.splitBalanceConfigurationLine(line);
+      return {
+        id: `balance-${index}`,
+        label,
+        description,
+      };
+    });
+    const allOptions = primaryOption
+      ? [primaryOption, ...options]
+      : options;
+
+    const lastRefreshAt = this.resolveBalanceLastRefreshAt(state);
+    if (allOptions.length > 0 && lastRefreshAt !== undefined) {
+      allOptions.push({
+        id: 'balance-last-refresh',
+        label: new Date(lastRefreshAt).toLocaleString(),
+        description: t('Last refreshed'),
+      });
+    }
+
+    return allOptions;
+  }
+
+  private buildPrimaryBalanceConfigurationOption(
+    state: BalanceProviderState | undefined,
+  ): BalanceConfigurationOption | undefined {
+    const snapshot = state?.snapshot;
+    const label = formatPrimaryBadge(snapshot)?.trim();
+    if (!label) {
+      return undefined;
+    }
+
+    return {
+      id: 'balance-primary',
+      label,
+      description: formatSummaryLine(snapshot) ?? t('Balance'),
+    };
+  }
+
+  private resolveBalanceLastRefreshAt(
+    state: BalanceProviderState | undefined,
+  ): number | undefined {
+    const lastRefreshAt = state?.lastRefreshAt;
+    if (
+      typeof lastRefreshAt === 'number' &&
+      Number.isFinite(lastRefreshAt) &&
+      lastRefreshAt >= 0
+    ) {
+      return lastRefreshAt;
+    }
+
+    const updatedAt = state?.snapshot?.updatedAt;
+    return typeof updatedAt === 'number' &&
+      Number.isFinite(updatedAt) &&
+      updatedAt >= 0
+      ? updatedAt
+      : undefined;
+  }
+
+  private splitBalanceConfigurationLine(line: string): {
+    label: string;
+    description: string;
+  } {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex === -1) {
+      return {
+        label: line,
+        description: line,
+      };
+    }
+
+    const description = line.slice(0, separatorIndex).trim();
+    const label = line.slice(separatorIndex + 1).trim();
+    if (!description || !label) {
+      return {
+        label: line,
+        description: line,
+      };
+    }
+
+    return { label, description };
   }
 
   private renderModelDisplayName(
     values: ModelDisplayNameTemplateValues,
+    hasDuplicateModelName: boolean,
   ): string {
-    const rendered = this.configStore.modelDisplayNameTemplate.replace(
+    const rendered = this.renderModelDisplayNameTemplate(
+      this.configStore.modelDisplayNameTemplate,
+      values,
+      hasDuplicateModelName,
+    );
+    const trimmed = rendered.trim();
+    return trimmed || values.modelName;
+  }
+
+  private renderModelDisplayNameTemplate(
+    template: string,
+    values: ModelDisplayNameTemplateValues,
+    hasDuplicateModelName: boolean,
+  ): string {
+    let rendered = '';
+    let index = 0;
+
+    while (index < template.length) {
+      const blockStart = template.indexOf('{{', index);
+
+      if (blockStart === -1) {
+        rendered += this.renderModelDisplayNamePlaceholders(
+          template.slice(index),
+          values,
+        );
+        break;
+      }
+
+      rendered += this.renderModelDisplayNamePlaceholders(
+        template.slice(index, blockStart),
+        values,
+      );
+
+      const blockEnd = template.indexOf('}}', blockStart + 2);
+      if (blockEnd === -1) {
+        rendered += this.renderModelDisplayNamePlaceholders(
+          template.slice(blockStart),
+          values,
+        );
+        break;
+      }
+
+      if (hasDuplicateModelName) {
+        rendered += this.renderModelDisplayNamePlaceholders(
+          template.slice(blockStart + 2, blockEnd),
+          values,
+        );
+      }
+
+      index = blockEnd + 2;
+    }
+
+    return rendered;
+  }
+
+  private renderModelDisplayNamePlaceholders(
+    template: string,
+    values: ModelDisplayNameTemplateValues,
+  ): string {
+    return template.replace(
       MODEL_DISPLAY_NAME_PLACEHOLDER_PATTERN,
       (_match, key: string) =>
         this.resolveModelDisplayNameTemplateValue(key, values),
     );
-    const trimmed = rendered.trim();
-    return trimmed || values.modelName;
   }
 
   private resolveModelDisplayNameTemplateValue(
@@ -222,18 +463,6 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
    */
   private createModelId(providerName: string, modelId: string): string {
     return `${this.encodeProviderName(providerName)}/${modelId}`;
-  }
-
-  private getVisibleProviders(
-    providers: readonly ProviderConfig[],
-  ): ProviderConfig[] {
-    if (!this.providerTypeFilter) {
-      return [...providers];
-    }
-
-    return providers.filter(
-      (provider) => provider.type === this.providerTypeFilter,
-    );
   }
 
   /**
@@ -296,12 +525,6 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       (p) => p.name === decodedProviderName,
     );
     if (!provider) {
-      return null;
-    }
-    if (
-      this.providerTypeFilter !== undefined &&
-      provider.type !== this.providerTypeFilter
-    ) {
       return null;
     }
 
@@ -473,6 +696,9 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       ttf: 0,
       ttft: 0,
     };
+    const requestTrace: ChatRequestTrace = {
+      performance: performanceTrace,
+    };
 
     let providerForBalance: ProviderConfig | undefined;
     let outcome: 'success' | 'error' | 'cancelled' = 'success';
@@ -509,13 +735,6 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       });
       logger.vscodeInput(messages, options);
 
-      if (this.configStore.fix001ContextIndicatorDisplay) {
-        setContextWindowOutputBufferForRequest(
-          logger.requestId,
-          resolvedRequestModel.maxOutputTokens ?? model.maxOutputTokens,
-        );
-      }
-
       const client = this.getClient(resolvedProvider);
       const chatNetwork = resolveChatNetwork(resolvedProvider);
       const retryConfig = chatNetwork.retry;
@@ -539,6 +758,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
             performanceTrace.ttft = 0;
             performanceTrace.tps = 0;
             performanceTrace.tl = 0;
+            requestTrace.usage = undefined;
           }
 
           let partCount = 0;
@@ -549,7 +769,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
             resolvedRequestModel,
             messages,
             options,
-            performanceTrace,
+            requestTrace,
             token,
             logger,
             credential,
@@ -564,15 +784,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
               partCount++;
               // Log VSCode output (verbose only)
               logger.vscodeOutput(part);
-              if (this.configStore.fix001ContextIndicatorDisplay) {
-                reportProgressWithContextWindowRequest(
-                  logger.requestId,
-                  progress,
-                  part,
-                );
-              } else {
-                progress.report(part);
-              }
+              progress.report(part);
             }
           } catch (error) {
             if (token.isCancellationRequested && isAbortLikeError(error)) {
@@ -613,7 +825,10 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
             break;
           }
 
-          const delayMs = calculateBackoffDelay(emptyStreamAttempt, retryConfig);
+          const delayMs = calculateBackoffDelay(
+            emptyStreamAttempt,
+            retryConfig,
+          );
           logger.emptyStreamRetry(
             emptyStreamAttempt + 1,
             retryConfig.maxRetries,
@@ -626,6 +841,12 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
         retryCancellationListener.dispose();
       }
 
+      if (requestTrace.usage && !token.isCancellationRequested) {
+        const usagePart = createUsageDataPart(requestTrace.usage);
+        logger.vscodeOutput(usagePart);
+        progress.report(usagePart);
+      }
+
       performanceTrace.tl = Date.now() - performanceTrace.tts;
       logger.complete(performanceTrace);
     } catch (error) {
@@ -636,9 +857,6 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       }
       throw error;
     } finally {
-      if (this.configStore.fix001ContextIndicatorDisplay) {
-        clearContextWindowRequest(logger.requestId);
-      }
       if (providerForBalance) {
         this.balanceManager?.notifyChatRequestFinished(
           providerForBalance.name,
@@ -665,11 +883,24 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     }
 
     const tokenizerId = resolveTokenizerId(found?.model.tokenizer);
-    const baseRaw = await TOKENIZERS[tokenizerId].provideTokenCount(
-      model,
-      text,
-      token,
-    );
+    let baseRaw: number;
+    try {
+      baseRaw = await TOKENIZERS[tokenizerId].provideTokenCount(
+        model,
+        text,
+        token,
+      );
+    } catch {
+      try {
+        baseRaw = await TOKENIZERS.default.provideTokenCount(
+          model,
+          text,
+          token,
+        );
+      } catch {
+        baseRaw = 0;
+      }
+    }
     const base =
       typeof baseRaw === 'number' && Number.isFinite(baseRaw) && baseRaw > 0
         ? baseRaw

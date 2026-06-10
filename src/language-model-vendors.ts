@@ -5,9 +5,18 @@ import {
 } from './client/definitions';
 
 export const LEGACY_LANGUAGE_MODEL_VENDOR_ID = 'unify-chat-provider';
+const LANGUAGE_MODEL_VENDOR_DISPLAY_NAME = 'Unify Chat Provider';
+const PROVIDER_PICKER_SUFFIXES = [
+  'OpenAI Chat Completion',
+  'OpenAI Responses',
+  'Anthropic Messages',
+  'Gemini',
+] as const;
 
-export function getLanguageModelVendorId(providerType: ProviderType): string {
-  return `${LEGACY_LANGUAGE_MODEL_VENDOR_ID}.${providerType}`;
+export function getLanguageModelVendorId(providerType?: ProviderType): string {
+  return providerType
+    ? `${LEGACY_LANGUAGE_MODEL_VENDOR_ID}.${providerType}`
+    : LEGACY_LANGUAGE_MODEL_VENDOR_ID;
 }
 
 export function getLanguageModelVendorType(
@@ -31,6 +40,21 @@ export function isUnifyChatProviderVendor(vendor: string): boolean {
 }
 
 export function getLanguageModelVendorDisplayName(vendor: string): string {
+  if (vendor === LEGACY_LANGUAGE_MODEL_VENDOR_ID) {
+    return LANGUAGE_MODEL_VENDOR_DISPLAY_NAME;
+  }
+
   const providerType = getLanguageModelVendorType(vendor);
   return providerType ? PROVIDER_TYPES[providerType].label : vendor;
+}
+
+export function getProviderPickerDisplayName(providerName: string): string {
+  for (const suffix of PROVIDER_PICKER_SUFFIXES) {
+    const suffixWithParens = ` (${suffix})`;
+    if (providerName.endsWith(suffixWithParens)) {
+      return providerName.slice(0, -suffixWithParens.length);
+    }
+  }
+
+  return providerName;
 }

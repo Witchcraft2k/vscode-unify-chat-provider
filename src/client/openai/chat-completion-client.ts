@@ -6,7 +6,11 @@ import {
 import { createSimpleHttpLogger } from '../../logger';
 import type { ProviderHttpLogger, RequestLogger } from '../../logger';
 import { ApiProvider } from '../interface';
-import { ProviderConfig, ModelConfig, PerformanceTrace } from '../../types';
+import {
+  ChatRequestTrace,
+  ProviderConfig,
+  ModelConfig,
+} from '../../types';
 import type { AuthTokenInfo } from '../../auth/types';
 import OpenAI from 'openai';
 import {
@@ -19,6 +23,8 @@ import {
   isCacheControlMarker,
   isImageMarker,
   isInternalMarker,
+  isRawBaseUrlEnabled,
+  isUsageMarker,
   normalizeImageMimeType,
   parseThinkingTags,
   resolveContextCacheConfig,
@@ -32,12 +38,12 @@ import {
   buildBaseUrl,
   createCustomFetch,
   createFirstTokenRecorder,
+  createCopilotUsage,
   estimateTokenCount as sharedEstimateTokenCount,
   getToken,
   getTokenType,
   getUnifiedUserAgent,
   isFeatureSupported,
-  isFeatureSupportedByProvider,
   mergeHeaders,
   normalizeToolInputSchema,
   parseToolArguments,
@@ -75,6 +81,7 @@ import { FeatureId } from '../definitions';
  * Identifies which provider-specific API shape to use for reasoning/thinking parameters.
  *
  * - `reasoning`                    — OpenRouter unified `reasoning` object
+ * - `openrouter_claude_adaptive_verbosity` — OpenRouter Claude adaptive thinking + top-level `verbosity`
  * - `thinking`                     — DeepSeek / MiMo / GLM `thinking: { type }` param
  * - `thinking_with_deepseek_reasoning_effort` — DeepSeek V4 `thinking` + `reasoning_effort`
  * - `thinking_with_reasoning_effort` — VolcEngine `thinking` + `reasoning_effort`
@@ -85,6 +92,7 @@ import { FeatureId } from '../definitions';
  */
 type ReasoningParamType =
   | 'reasoning'
+  | 'openrouter_claude_adaptive_verbosity'
   | 'thinking'
   | 'thinking_with_deepseek_reasoning_effort'
   | 'thinking_with_reasoning_effort'
@@ -99,6 +107,34 @@ type OpenRouterThinkingOutputState = {
   lastType?: OpenRouterThinkingContentType;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function hasChoices(value: unknown): boolean {
+  return isRecord(value) && Array.isArray(value['choices']);
+}
+
+function unwrapProviderDataEnvelope<T>(
+  value: T,
+  isExpected: (candidate: unknown) => candidate is T,
+): T {
+  if (!isRecord(value) || hasChoices(value)) {
+    return value;
+  }
+
+  const data = value['data'];
+  return isExpected(data) ? data : value;
+}
+
+function isChatCompletion(value: unknown): value is ChatCompletion {
+  return hasChoices(value);
+}
+
+function isChatCompletionChunk(value: unknown): value is ChatCompletionChunk {
+  return hasChoices(value);
+}
+
 export class OpenAIChatCompletionProvider implements ApiProvider {
   protected readonly baseUrl: string;
 
@@ -107,13 +143,10 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
   }
 
   protected resolveBaseUrl(config: ProviderConfig): string {
-    if (isFeatureSupportedByProvider(FeatureId.OpenAIUseRawBaseUrl, config)) {
-      return buildBaseUrl(config.baseUrl);
-    }
-
     return buildBaseUrl(config.baseUrl, {
       ensureSuffix: '/v1',
       skipSuffixIfMatch: /\/v\d+$/,
+      useRawBaseUrl: isRawBaseUrlEnabled(config),
     });
   }
 
@@ -152,6 +185,7 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
   ): OpenAI {
     const chatNetwork =
       mode === 'chat' ? resolveChatNetwork(this.config) : undefined;
+    const proxy = chatNetwork?.proxy ?? resolveChatNetwork(this.config).proxy;
     const effectiveTimeout =
       chatNetwork?.timeout ?? DEFAULT_NORMAL_TIMEOUT_CONFIG;
 
@@ -169,6 +203,7 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
         responseTimeoutMs: effectiveTimeout.response,
         logger,
         retryConfig: chatNetwork?.retry,
+        proxy,
         type: mode,
         abortSignal,
       }),
@@ -418,7 +453,7 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
       if (isCacheControlMarker(part)) {
         // ignore it, just use the officially recommended caching strategy.
         return undefined;
-      } else if (isInternalMarker(part)) {
+      } else if (isInternalMarker(part) || isUsageMarker(part)) {
         return undefined;
       } else if (isImageMarker(part)) {
         if (role === vscode.LanguageModelChatMessageRole.System) {
@@ -599,6 +634,15 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
         return { reasoning: { enabled: true } };
       }
 
+      // OpenRouter Claude 4.6/4.7 — adaptive thinking is controlled via
+      // `reasoning.enabled`; effort is controlled by top-level `verbosity`.
+      // @see https://openrouter.ai/docs/cookbook/evaluate-and-optimize/model-migrations/claude-4-7
+      case 'openrouter_claude_adaptive_verbosity': {
+        if (!thinking) return {};
+        if (isDisabled) return { reasoning: { enabled: false } };
+        return { reasoning: { enabled: true } };
+      }
+
       // DeepSeek / MiMo / GLM / Z.AI — `thinking: { type }` only
       // @see https://api-docs.deepseek.com/zh-cn/guides/thinking_mode
       case 'thinking': {
@@ -711,7 +755,22 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
     type: ReasoningParamType,
   ): Record<string, unknown> {
     const thinking = model.thinking;
-    if (type !== 'thinking_with_deepseek_reasoning_effort' || !thinking) {
+    if (!thinking) {
+      return {};
+    }
+
+    if (type === 'openrouter_claude_adaptive_verbosity') {
+      if (this.isThinkingDisabled(thinking) || thinking.effort == null) {
+        return {};
+      }
+      return {
+        verbosity: this.normalizeReasoningEffortForOpenRouterClaude(
+          thinking.effort,
+        ),
+      };
+    }
+
+    if (type !== 'thinking_with_deepseek_reasoning_effort') {
       return {};
     }
     if (this.isThinkingDisabled(thinking) || thinking.effort == null) {
@@ -722,6 +781,26 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
         thinking.effort,
       ),
     };
+  }
+
+  private normalizeReasoningEffortForOpenRouterClaude(
+    effort: NonNullable<NonNullable<ModelConfig['thinking']>['effort']>,
+  ): 'low' | 'medium' | 'high' | 'xhigh' | 'max' {
+    switch (effort) {
+      case 'minimal':
+      case 'low':
+        return 'low';
+      case 'medium':
+        return 'medium';
+      case 'xhigh':
+        return 'xhigh';
+      case 'max':
+        return 'max';
+      case 'high':
+      case 'none':
+      default:
+        return 'high';
+    }
   }
 
   private normalizeThinkingTypeForDeepSeek(
@@ -806,11 +885,12 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
     model: ModelConfig,
     messages: readonly LanguageModelChatRequestMessage[],
     options: ProvideLanguageModelChatResponseOptions,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     token: CancellationToken,
     logger: RequestLogger,
     credential: AuthTokenInfo,
   ): AsyncGenerator<vscode.LanguageModelResponsePart2> {
+    const performanceTrace = requestTrace.performance;
     const abortController = new AbortController();
     const cancellationListener = token.onCancellationRequested(() => {
       abortController.abort();
@@ -828,6 +908,11 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
     );
     const useReasoningParam = isFeatureSupported(
       FeatureId.OpenAIUseReasoningParam,
+      this.config,
+      model,
+    );
+    const useOpenRouterClaudeAdaptiveVerbosity = isFeatureSupported(
+      FeatureId.OpenRouterUseClaudeAdaptiveVerbosity,
       this.config,
       model,
     );
@@ -908,7 +993,9 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
     );
 
     let thinkingParamType: ReasoningParamType;
-    if (useReasoningParam) {
+    if (useOpenRouterClaudeAdaptiveVerbosity) {
+      thinkingParamType = 'openrouter_claude_adaptive_verbosity';
+    } else if (useReasoningParam) {
       thinkingParamType = 'reasoning';
     } else if (useThinkingParam) {
       thinkingParamType = useDeepSeekReasoningEffortParam
@@ -1040,12 +1127,13 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
           stream,
           responseTimeoutMs,
           abortController.signal,
+          (error) => abortController.abort(error),
         );
         yield* this.parseMessageStream(
           timedStream,
           token,
           logger,
-          performanceTrace,
+          requestTrace,
           expectedIdentity,
         );
       } else {
@@ -1058,7 +1146,7 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
         );
         yield* this.parseMessage(
           data,
-          performanceTrace,
+          requestTrace,
           logger,
           expectedIdentity,
         );
@@ -1070,10 +1158,11 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
 
   private async *parseMessage(
     message: ChatCompletion,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     logger: RequestLogger,
     expectedIdentity: string,
   ): AsyncGenerator<vscode.LanguageModelResponsePart2> {
+    const performanceTrace = requestTrace.performance;
     // NOTE: The current behavior of VSCode is such that all Parts returned here will be
     // aggregated into a single Part during the next request, and only the Thinking part
     // will be retained during the tool invocation round; most other types of Parts
@@ -1090,10 +1179,7 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
       Date.now() - (performanceTrace.tts + performanceTrace.ttf);
 
     // Some providers wrap the response in a `data` field
-    const response =
-      (message as any).data && !(message as any).choices
-        ? (message as any).data
-        : message;
+    const response = unwrapProviderDataEnvelope(message, isChatCompletion);
     const choice = response.choices[0];
     if (!choice) {
       throw new Error('OpenAI response did not include any choices');
@@ -1146,7 +1232,7 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
     );
 
     if (message.usage) {
-      this.processUsage(message.usage, performanceTrace, logger);
+      this.processUsage(message.usage, requestTrace, logger);
     }
   }
 
@@ -1307,9 +1393,10 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
     stream: AsyncIterable<OpenAI.Chat.Completions.ChatCompletionChunk>,
     token: vscode.CancellationToken,
     logger: RequestLogger,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     expectedIdentity: string,
   ): AsyncGenerator<vscode.LanguageModelResponsePart2> {
+    const performanceTrace = requestTrace.performance;
     let snapshot: ChatCompletionSnapshot | undefined;
     let usage: CompletionUsage | null | undefined;
     const finalizedChoiceIndexes = new Set();
@@ -1325,10 +1412,7 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
 
       logger.providerResponseChunk(JSON.stringify(event));
       // Some providers may wrap chunks in a `data` field
-      const chunk =
-        (event as any).data && !(event as any).choices
-          ? (event as any).data
-          : event;
+      const chunk = unwrapProviderDataEnvelope(event, isChatCompletionChunk);
 
       snapshot = this.accumulateChatCompletion(snapshot, chunk);
       if (chunk.usage) usage = chunk.usage;
@@ -1466,7 +1550,7 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
     }
 
     if (usage) {
-      this.processUsage(usage, performanceTrace, logger);
+      this.processUsage(usage, requestTrace, logger);
     }
   }
 
@@ -1626,15 +1710,15 @@ export class OpenAIChatCompletionProvider implements ApiProvider {
 
   private processUsage(
     usage: CompletionUsage,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     logger: RequestLogger,
   ) {
-    sharedProcessUsage(
+    const normalizedUsage = createCopilotUsage(
+      usage.prompt_tokens,
       usage.completion_tokens,
-      performanceTrace,
-      logger,
-      usage,
+      usage.prompt_tokens_details?.cached_tokens,
     );
+    sharedProcessUsage(requestTrace, logger, normalizedUsage);
   }
 
   estimateTokenCount(text: string): number {

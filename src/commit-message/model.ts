@@ -9,6 +9,7 @@ import { NoLanguageModelsAvailableError } from './types';
 import { t } from '../i18n';
 import {
   getLanguageModelVendorDisplayName,
+  getProviderPickerDisplayName,
   isUnifyChatProviderVendor,
 } from '../language-model-vendors';
 
@@ -35,7 +36,7 @@ function formatConfiguredModel(
   if (isUnifyChatProviderVendor(model.vendor)) {
     const parsed = parseExtensionModelId(model.id);
     if (parsed) {
-      return `${getLanguageModelVendorDisplayName(model.vendor)} / ${parsed.providerName} / ${parsed.modelId}`;
+      return `${getLanguageModelVendorDisplayName(model.vendor)} / ${getProviderPickerDisplayName(parsed.providerName)} / ${parsed.modelId}`;
     }
   }
 
@@ -70,7 +71,9 @@ function getExtensionProviderName(model: vscode.LanguageModelChat): string {
     return '';
   }
 
-  return parseExtensionModelId(model.id)?.providerName ?? '';
+  return getProviderPickerDisplayName(
+    parseExtensionModelId(model.id)?.providerName ?? '',
+  );
 }
 
 function getModelVendorLabel(model: vscode.LanguageModelChat): string {

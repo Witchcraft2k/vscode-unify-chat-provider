@@ -5,7 +5,12 @@ import {
   PROVIDER_CONFIG_KEYS,
   withoutKeys,
 } from './config-ops';
-import { normalizeBaseUrlInput } from './utils';
+import {
+  isRawBaseUrlEnabled,
+  normalizeBaseUrlInput,
+  normalizeRawBaseUrlInput,
+  normalizeUseRawBaseUrl,
+} from './utils';
 import { PROVIDER_KEYS, ProviderType } from './client/definitions';
 import { getRenamedProviderType } from './secret/migration';
 import { normalizePresetTemplates } from './preset-templates';
@@ -13,7 +18,9 @@ import { normalizeConfiguredModelCapabilities } from './model-capabilities';
 import {
   ContextCacheConfig,
   ModelConfig,
+  ProxyConfig,
   ProviderConfig,
+  ProxyType,
   ServiceTier,
 } from './types';
 
@@ -21,16 +28,14 @@ export const CONFIG_NAMESPACE = 'unifyChatProvider';
 const DEFAULT_BALANCE_REFRESH_INTERVAL_MS = 60_000;
 const DEFAULT_BALANCE_THROTTLE_WINDOW_MS = 10_000;
 const DEFAULT_BALANCE_STATUS_BAR_ICON = '$(credit-card)';
-const DEFAULT_MODEL_DISPLAY_NAME_TEMPLATE = '{providerName} / {modelName}';
+const DEFAULT_DISPLAY_BALANCE_IN_CONFIGURATION = false;
+const DEFAULT_MODEL_DISPLAY_NAME_TEMPLATE = '{modelName}{{ ({providerName})}}';
 const MIN_BALANCE_REFRESH_INTERVAL_MS = 1_000;
 const MIN_BALANCE_THROTTLE_WINDOW_MS = 0;
 const DEFAULT_BALANCE_WARNING_ENABLED = true;
 const DEFAULT_BALANCE_WARNING_TIME_THRESHOLD_DAYS = 1;
 const DEFAULT_BALANCE_WARNING_AMOUNT_THRESHOLD = 1;
 const DEFAULT_BALANCE_WARNING_TOKEN_THRESHOLD_MILLIONS = 1;
-export const FIX001_CONTEXT_INDICATOR_DISPLAY_CONFIG_KEY =
-  'fixes.fix001ContextIndicatorDisplay';
-export const DEFAULT_FIX001_CONTEXT_INDICATOR_DISPLAY = true;
 const MIN_BALANCE_WARNING_TIME_THRESHOLD_DAYS = 0;
 const MIN_BALANCE_WARNING_AMOUNT_THRESHOLD = 0;
 const MIN_BALANCE_WARNING_TOKEN_THRESHOLD_MILLIONS = 0;
@@ -39,14 +44,15 @@ const OBSERVED_CONFIG_KEYS = [
   'verbose',
   'modelDisplayNameTemplate',
   'storeApiKeyInSettings',
-  FIX001_CONTEXT_INDICATOR_DISPLAY_CONFIG_KEY,
   'balanceRefreshIntervalMs',
   'balanceThrottleWindowMs',
   'balanceStatusBarIcon',
+  'displayBalanceInConfiguration',
   'balanceWarning.enabled',
   'balanceWarning.timeThresholdDays',
   'balanceWarning.amountThreshold',
   'balanceWarning.tokenThresholdMillions',
+  'networkSettings',
 ] as const;
 
 /** Extension configuration stored in VS Code application-scoped user settings. */
@@ -54,15 +60,11 @@ export interface ExtensionConfiguration {
   endpoints: ProviderConfig[];
   modelDisplayNameTemplate: string;
   storeApiKeyInSettings: boolean;
-  fixes: FixesConfiguration;
   balanceRefreshIntervalMs: number;
   balanceThrottleWindowMs: number;
+  displayBalanceInConfiguration: boolean;
   balanceWarning: BalanceWarningConfiguration;
   verbose: boolean;
-}
-
-export interface FixesConfiguration {
-  fix001ContextIndicatorDisplay: boolean;
 }
 
 export interface BalanceWarningConfiguration {
@@ -143,21 +145,6 @@ export class ConfigStore {
     return typeof raw === 'boolean' ? raw : false;
   }
 
-  get fix001ContextIndicatorDisplay(): boolean {
-    const raw = this.readConfiguredUnknown(
-      FIX001_CONTEXT_INDICATOR_DISPLAY_CONFIG_KEY,
-    );
-    return typeof raw === 'boolean'
-      ? raw
-      : DEFAULT_FIX001_CONTEXT_INDICATOR_DISPLAY;
-  }
-
-  get fixes(): FixesConfiguration {
-    return {
-      fix001ContextIndicatorDisplay: this.fix001ContextIndicatorDisplay,
-    };
-  }
-
   /**
    * Periodic refresh interval for provider balances (milliseconds).
    */
@@ -186,6 +173,13 @@ export class ConfigStore {
     const raw = this.readConfiguredUnknown('balanceStatusBarIcon');
 
     return typeof raw === 'string' ? raw : DEFAULT_BALANCE_STATUS_BAR_ICON;
+  }
+
+  get displayBalanceInConfiguration(): boolean {
+    const raw = this.readConfiguredUnknown('displayBalanceInConfiguration');
+    return typeof raw === 'boolean'
+      ? raw
+      : DEFAULT_DISPLAY_BALANCE_IN_CONFIGURATION;
   }
 
   get balanceWarningEnabled(): boolean {
@@ -229,6 +223,15 @@ export class ConfigStore {
     };
   }
 
+  get networkProxy(): ProxyConfig | undefined {
+    const raw = this.readConfiguredUnknown('networkSettings');
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return undefined;
+    }
+
+    return this.normalizeProxyConfig((raw as Record<string, unknown>)['proxy']);
+  }
+
   /**
    * Get the full extension configuration
    */
@@ -237,9 +240,9 @@ export class ConfigStore {
       endpoints: this.endpoints,
       modelDisplayNameTemplate: this.modelDisplayNameTemplate,
       storeApiKeyInSettings: this.storeApiKeyInSettings,
-      fixes: this.fixes,
       balanceRefreshIntervalMs: this.balanceRefreshIntervalMs,
       balanceThrottleWindowMs: this.balanceThrottleWindowMs,
+      displayBalanceInConfiguration: this.displayBalanceInConfiguration,
       balanceWarning: this.balanceWarning,
       verbose: this.verbose,
     };
@@ -299,9 +302,12 @@ export class ConfigStore {
       return null;
     }
 
+    const useRawBaseUrl = normalizeUseRawBaseUrl(obj.useRawBaseUrl);
     let baseUrl: string;
     try {
-      baseUrl = normalizeBaseUrlInput(obj.baseUrl);
+      baseUrl = isRawBaseUrlEnabled({ useRawBaseUrl })
+        ? normalizeRawBaseUrlInput(obj.baseUrl)
+        : normalizeBaseUrlInput(obj.baseUrl);
     } catch {
       return null;
     }
@@ -340,10 +346,12 @@ export class ConfigStore {
       ] as const),
     );
 
+    provider.useRawBaseUrl = normalizeUseRawBaseUrl(provider.useRawBaseUrl);
     provider.transport = this.normalizeTransportMode(provider.transport);
     provider.serviceTier = this.normalizeServiceTier(provider.serviceTier);
     provider.extraHeaders = this.normalizeStringRecord(provider.extraHeaders);
     provider.extraBody = this.normalizeObjectRecord(provider.extraBody);
+    provider.proxy = this.normalizeProxyConfig(provider.proxy);
     provider.contextCache = this.normalizeContextCacheConfig(
       provider.contextCache,
     );
@@ -379,6 +387,80 @@ export class ConfigStore {
       default:
         return undefined;
     }
+  }
+
+  private normalizeProxyType(raw: unknown): ProxyType | undefined {
+    return raw === 'vscode' || raw === 'direct' || raw === 'custom'
+      ? raw
+      : undefined;
+  }
+
+  private normalizeProxyUrl(raw: unknown): string | undefined {
+    if (typeof raw !== 'string') {
+      return undefined;
+    }
+
+    const trimmed = raw.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+
+    try {
+      const protocol = new URL(trimmed).protocol.toLowerCase();
+      return protocol === 'http:' ||
+        protocol === 'https:' ||
+        protocol === 'socks:' ||
+        protocol === 'socks4:' ||
+        protocol === 'socks4a:' ||
+        protocol === 'socks5:' ||
+        protocol === 'socks5h:'
+        ? trimmed
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private normalizeProxyConfig(raw: unknown): ProxyConfig | undefined {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return undefined;
+    }
+
+    const record = raw as Record<string, unknown>;
+    const out: ProxyConfig = {};
+
+    const type = this.normalizeProxyType(record['type']);
+    if (type !== undefined) {
+      out.type = type;
+    }
+
+    const url = this.normalizeProxyUrl(record['url']);
+    if (url !== undefined) {
+      out.url = url;
+    }
+
+    const authorization = record['authorization'];
+    if (typeof authorization === 'string' && authorization.trim()) {
+      out.authorization = authorization.trim();
+    }
+
+    const strictSSL = record['strictSSL'];
+    if (typeof strictSSL === 'boolean') {
+      out.strictSSL = strictSSL;
+    }
+
+    const noProxy = record['noProxy'];
+    if (Array.isArray(noProxy)) {
+      const entries = noProxy
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry !== '');
+      if (entries.length > 0) {
+        out.noProxy = entries;
+      }
+    }
+
+    return Object.keys(out).length > 0 ? out : undefined;
   }
 
   private normalizeContextCacheConfig(

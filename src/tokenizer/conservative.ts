@@ -3,6 +3,7 @@ import {
   isCacheControlMarker,
   isImageMarker,
   isInternalMarker,
+  isUsageMarker,
 } from '../utils';
 
 /**
@@ -82,7 +83,11 @@ function countUnknown(state: CountState, value: unknown): void {
   }
 
   if (value instanceof vscode.LanguageModelDataPart) {
-    if (isInternalMarker(value) || isCacheControlMarker(value)) {
+    if (
+      isInternalMarker(value) ||
+      isCacheControlMarker(value) ||
+      isUsageMarker(value)
+    ) {
       return;
     }
     if (isImageMarker(value)) {

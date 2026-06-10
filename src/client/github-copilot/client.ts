@@ -9,11 +9,11 @@ import type { AuthTokenInfo } from '../../auth/types';
 import type { RequestLogger } from '../../logger';
 import { getBaseModelId } from '../../model-id-utils';
 import type {
+  ChatRequestTrace,
   ModelConfig,
-  PerformanceTrace,
   ProviderConfig,
 } from '../../types';
-import { isImageMarker } from '../../utils';
+import { isImageMarker, isRawBaseUrlEnabled } from '../../utils';
 import type { ApiProvider } from '../interface';
 import { buildBaseUrl } from '../utils';
 import { OpenAIChatCompletionProvider } from '../openai/chat-completion-client';
@@ -23,6 +23,10 @@ import type { ChatCompletionSnapshot } from 'openai/lib/ChatCompletionStream';
 import { buildOpencodeUserAgent } from '../../utils';
 
 function resolveCopilotApiBaseUrl(config: ProviderConfig): string {
+  if (isRawBaseUrlEnabled(config)) {
+    return buildBaseUrl(config.baseUrl, { useRawBaseUrl: true });
+  }
+
   const normalized = buildBaseUrl(config.baseUrl, { stripPattern: /\/v1$/ });
 
   const auth = config.auth;
@@ -282,7 +286,7 @@ export class GitHubCopilotProvider implements ApiProvider {
     model: ModelConfig,
     messages: readonly LanguageModelChatRequestMessage[],
     options: ProvideLanguageModelChatResponseOptions,
-    performanceTrace: PerformanceTrace,
+    requestTrace: ChatRequestTrace,
     token: CancellationToken,
     logger: RequestLogger,
     credential: AuthTokenInfo,
@@ -297,7 +301,7 @@ export class GitHubCopilotProvider implements ApiProvider {
       model,
       messages,
       options,
-      performanceTrace,
+      requestTrace,
       token,
       logger,
       credential,

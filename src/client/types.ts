@@ -22,6 +22,11 @@ export namespace DataPartMimeTypes {
    * Thinking data marker - reserved for thinking block metadata.
    */
   export const ThinkingData = 'thinking';
+
+  /**
+   * Copilot private compatibility marker for token usage.
+   */
+  export const Usage = 'usage';
 }
 
 export interface ThinkingBlockMetadata {

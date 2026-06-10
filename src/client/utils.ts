@@ -1,19 +1,16 @@
 import { getBaseModelId } from '../model-id-utils';
-import type {
-  ProviderHttpLogger,
-  ProviderUsage,
-  RequestLogger,
-} from '../logger';
+import type { ProviderHttpLogger, RequestLogger } from '../logger';
 import * as vscode from 'vscode';
 import { Agent } from 'undici';
 import type { Dispatcher } from 'undici';
 import type { AuthTokenInfo } from '../auth/types';
 import {
-  CONFIG_NAMESPACE,
-  DEFAULT_FIX001_CONTEXT_INDICATOR_DISPLAY,
-  FIX001_CONTEXT_INDICATOR_DISPLAY_CONFIG_KEY,
-} from '../config-store';
-import { ModelConfig, PerformanceTrace, ProviderConfig } from '../types';
+  ChatRequestTrace,
+  CopilotUsage,
+  ModelConfig,
+  PerformanceTrace,
+  ProviderConfig,
+} from '../types';
 import {
   bodyInitToLoggableValue,
   DEFAULT_CHAT_RETRY_CONFIG,
@@ -22,9 +19,10 @@ import {
   fetchWithRetry,
   headersInitToRecord,
   normalizeBaseUrlInput,
+  normalizeRawBaseUrlInput,
+  runWhenResponseBodySettles,
   type RetryConfig,
 } from '../utils';
-import { reportUsageToContextWindowForRequest } from '../context-window-hook-bridge';
 import { FeatureId, FEATURES, PROVIDER_TYPES } from './definitions';
 import { ApiProvider } from './interface';
 import { ProviderPattern } from './types';
@@ -257,8 +255,14 @@ export function buildBaseUrl(
     ensureSuffix?: string;
     /** Skip adding ensureSuffix if URL matches this pattern */
     skipSuffixIfMatch?: RegExp;
+    /** Preserve user input except surrounding whitespace and URL validity checks. */
+    useRawBaseUrl?: boolean;
   },
 ): string {
+  if (options?.useRawBaseUrl) {
+    return normalizeRawBaseUrlInput(baseUrl);
+  }
+
   const normalized = normalizeBaseUrlInput(baseUrl);
 
   if (options?.stripPattern && options.stripPattern.test(normalized)) {
@@ -347,11 +351,17 @@ export function resolveAnthropicServiceTier(
     case 'standard':
     case 'flex':
     case 'scale':
-    case 'priority':
       return 'standard_only';
     default:
       return undefined;
   }
+}
+
+export function isAnthropicFastModeServiceTier(
+  provider: ProviderConfig,
+  model: ModelConfig,
+): boolean {
+  return (model.serviceTier ?? provider.serviceTier) === 'priority';
 }
 
 const HEADER_VALUE_PLACEHOLDER_PATTERN = /\$\{([A-Z0-9_]+)\}/g;
@@ -384,37 +394,50 @@ export function estimateTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
 }
 
+function normalizeTokenCount(value: number | null | undefined): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.max(0, Math.trunc(value));
+}
+
+export function createCopilotUsage(
+  promptTokens: number | null | undefined,
+  completionTokens: number | null | undefined,
+  cachedPromptTokens: number | null | undefined = 0,
+): CopilotUsage {
+  const prompt = normalizeTokenCount(promptTokens);
+  const completion = normalizeTokenCount(completionTokens);
+
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: prompt + completion,
+    prompt_tokens_details: {
+      cached_tokens: normalizeTokenCount(cachedPromptTokens),
+    },
+  };
+}
+
 /**
  * Process usage information and update performance trace.
  */
 export function processUsage(
-  outputTokens: number | undefined,
-  performanceTrace: PerformanceTrace,
+  requestTrace: ChatRequestTrace,
   logger: RequestLogger,
-  usage: ProviderUsage,
+  usage: CopilotUsage,
 ): void {
-  if (outputTokens) {
+  const performanceTrace = requestTrace.performance;
+  if (usage.completion_tokens > 0) {
     performanceTrace.tps =
-      (outputTokens /
+      (usage.completion_tokens /
         (Date.now() - (performanceTrace.tts + performanceTrace.ttf))) *
       1000;
   } else {
     performanceTrace.tps = NaN;
   }
+  requestTrace.usage = usage;
   logger.usage(usage);
-
-  // Inject usage into VS Code's context window widget.
-  // This hooks into the Copilot Chat internal API to report token counts
-  // that the LanguageModelChatProvider API cannot natively convey.
-  const config = vscode.workspace.getConfiguration(CONFIG_NAMESPACE);
-  const fixEnabled = config.get<boolean>(
-    FIX001_CONTEXT_INDICATOR_DISPLAY_CONFIG_KEY,
-    DEFAULT_FIX001_CONTEXT_INDICATOR_DISPLAY,
-  );
-
-  if (fixEnabled) {
-    reportUsageToContextWindowForRequest(logger.requestId, usage);
-  }
 }
 
 /**
@@ -529,6 +552,73 @@ function readToolSchemaRequiredNames(value: unknown): string[] {
   return value.filter(
     (item): item is string => typeof item === 'string' && item.trim() !== '',
   );
+}
+
+function isToolSchemaMapKey(key: string): boolean {
+  return (
+    key === '$defs' ||
+    key === 'definitions' ||
+    key === 'dependentSchemas' ||
+    key === 'patternProperties' ||
+    key === 'properties'
+  );
+}
+
+function isToolSchemaOrBooleanKey(key: string): boolean {
+  return key === 'additionalProperties' || key === 'unevaluatedProperties';
+}
+
+function normalizeToolSchemaOrBoolean(
+  value: unknown,
+): Record<string, unknown> | boolean | undefined {
+  if (typeof value === 'boolean') {
+    return value;
+  }
+
+  const normalized = normalizeToolSchemaValue(value);
+  if (typeof normalized === 'boolean') {
+    return normalized;
+  }
+
+  return isToolSchemaRecord(normalized) ? normalized : undefined;
+}
+
+function normalizeToolSchemaMap(
+  value: unknown,
+): Record<string, unknown> | undefined {
+  if (!isToolSchemaRecord(value)) {
+    return undefined;
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) {
+    const normalized = normalizeToolSchemaOrBoolean(child);
+    if (normalized !== undefined) {
+      out[key] = normalized;
+    }
+  }
+
+  return out;
+}
+
+function normalizeToolSchemaItems(
+  value: unknown,
+):
+  | Record<string, unknown>
+  | boolean
+  | Array<Record<string, unknown> | boolean>
+  | undefined {
+  if (Array.isArray(value)) {
+    const items = value
+      .map((item) => normalizeToolSchemaOrBoolean(item))
+      .filter(
+        (item): item is Record<string, unknown> | boolean => item !== undefined,
+      );
+
+    return items.length > 0 ? items : undefined;
+  }
+
+  return normalizeToolSchemaOrBoolean(value);
 }
 
 function mergeToolSchemaRequired(
@@ -784,6 +874,30 @@ function normalizeToolSchemaValue(value: unknown): unknown {
 
   const out: Record<string, unknown> = {};
   for (const [key, child] of Object.entries(value)) {
+    if (isToolSchemaMapKey(key)) {
+      const normalizedMap = normalizeToolSchemaMap(child);
+      if (normalizedMap !== undefined) {
+        out[key] = normalizedMap;
+      }
+      continue;
+    }
+
+    if (isToolSchemaOrBooleanKey(key)) {
+      const normalizedSchema = normalizeToolSchemaOrBoolean(child);
+      if (normalizedSchema !== undefined) {
+        out[key] = normalizedSchema;
+      }
+      continue;
+    }
+
+    if (key === 'items' || key === 'prefixItems') {
+      const normalizedItems = normalizeToolSchemaItems(child);
+      if (normalizedItems !== undefined) {
+        out[key] = normalizedItems;
+      }
+      continue;
+    }
+
     out[key] = normalizeToolSchemaValue(child);
   }
 
@@ -862,6 +976,7 @@ export interface CreateCustomFetchOptions {
   logger?: ProviderHttpLogger;
   urlTransformer?: (url: string) => string;
   retryConfig?: RetryConfig;
+  proxy?: ProviderConfig['proxy'];
   type: FetchMode;
   /**
    * Optional upstream abort signal (e.g. derived from VSCode CancellationToken).
@@ -898,6 +1013,7 @@ export function createCustomFetch(
     logger,
     urlTransformer,
     retryConfig,
+    proxy,
     type,
     abortSignal,
   } = options;
@@ -925,22 +1041,28 @@ export function createCustomFetch(
 
   const combineAbortSignals = (
     signals: Array<AbortSignal | null | undefined>,
-  ): { signal?: AbortSignal; dispose: () => void } => {
-    const activeSignals: AbortSignal[] = signals.filter(
-      (signal): signal is AbortSignal => signal != null,
+  ): { signal?: AbortSignal; dispose: () => void; hasListeners: boolean } => {
+    const activeSignals = Array.from(
+      new Set(
+        signals.filter((signal): signal is AbortSignal => signal != null),
+      ),
     );
 
     if (activeSignals.length === 0) {
-      return { signal: undefined, dispose: () => {} };
+      return { signal: undefined, dispose: () => {}, hasListeners: false };
     }
 
     if (activeSignals.length === 1) {
-      return { signal: activeSignals[0], dispose: () => {} };
+      return {
+        signal: activeSignals[0],
+        dispose: () => {},
+        hasListeners: false,
+      };
     }
 
     const alreadyAborted = activeSignals.find((signal) => signal.aborted);
     if (alreadyAborted) {
-      return { signal: alreadyAborted, dispose: () => {} };
+      return { signal: alreadyAborted, dispose: () => {}, hasListeners: false };
     }
 
     const controller = new AbortController();
@@ -964,7 +1086,7 @@ export function createCustomFetch(
       }
     };
 
-    return { signal: controller.signal, dispose };
+    return { signal: controller.signal, dispose, hasListeners: true };
   };
 
   return async (
@@ -988,6 +1110,7 @@ export function createCustomFetch(
     }
 
     const combined = combineAbortSignals([init?.signal, abortSignal]);
+    let keepAbortLinkForResponseBody = false;
     try {
       const requestInit: RequestInit & { dispatcher?: Dispatcher } = {
         ...init,
@@ -1006,6 +1129,7 @@ export function createCustomFetch(
             ? DEFAULT_CHAT_RETRY_CONFIG
             : DEFAULT_NORMAL_RETRY_CONFIG),
         connectionTimeoutMs,
+        proxy,
       });
 
       if (logger) {
@@ -1026,9 +1150,16 @@ export function createCustomFetch(
         }
       }
 
+      if (combined.hasListeners) {
+        keepAbortLinkForResponseBody = true;
+        return runWhenResponseBodySettles(response, combined.dispose);
+      }
+
       return response;
     } finally {
-      combined.dispose();
+      if (!keepAbortLinkForResponseBody) {
+        combined.dispose();
+      }
     }
   };
 }

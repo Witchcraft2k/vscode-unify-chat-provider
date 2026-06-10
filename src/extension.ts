@@ -33,19 +33,20 @@ import { registerMainInstanceHandlers } from './main-instance/register-handlers'
 import { authLog } from './logger';
 import { webSocketSessionManager } from './client/websocket-session-manager';
 import { syncBuiltInParamsToAllConfigs } from './sync-built-in-model-params';
-import {
-  disposeContextWindowHookBridge,
-  initializeContextWindowHookBridge,
-} from './context-window-hook-bridge';
 import { registerCommitMessageGeneration } from './commit-message';
-import { PROVIDER_KEYS } from './client/definitions';
-import { getLanguageModelVendorId } from './language-model-vendors';
+
+const VENDOR_ID = 'unify-chat-provider';
+const EXTENSIONS_CONFIG_NAMESPACE = 'extensions';
+const SUPPORT_AGENTS_WINDOW_SETTING = 'supportAgentsWindow';
+
 /**
  * Extension activation
  */
 export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
+  await ensureAgentsWindowSupportConfigured(context);
+
   await mainInstance.initialize(context);
   context.subscriptions.push(mainInstance);
 
@@ -214,83 +215,12 @@ export async function activate(
   context.subscriptions.push(balanceManager);
   context.subscriptions.push(webSocketSessionManager);
 
-  const chatProviders = PROVIDER_KEYS.map(
-    (providerType) =>
-      new UnifyChatService(
-        configStore,
-        secretStore,
-        authManager,
-        balanceManager,
-        providerType,
-      ),
+  const chatProvider = new UnifyChatService(
+    configStore,
+    secretStore,
+    authManager,
+    balanceManager,
   );
-
-  let contextWindowHookInitialization: Promise<boolean> | undefined;
-  let contextWindowHookTouched = false;
-
-  const ensureContextWindowHookInitialized = (): void => {
-    if (
-      !configStore.fix001ContextIndicatorDisplay ||
-      contextWindowHookInitialization
-      ) {
-      return;
-    }
-
-    contextWindowHookTouched = true;
-    contextWindowHookInitialization = initializeContextWindowHookBridge()
-      .then((success) => {
-        if (!success) {
-          contextWindowHookInitialization = undefined;
-        }
-        console.log(
-          '[UnifyChatProvider] Context window hook initialized:',
-          success,
-        );
-        return success;
-      })
-      .catch((error) => {
-        contextWindowHookInitialization = undefined;
-        console.error(
-          '[UnifyChatProvider] Failed to initialize context window hook:',
-          error,
-        );
-        return false;
-      });
-  };
-
-  const disposeContextWindowHook = (): void => {
-    if (!contextWindowHookTouched) {
-      return;
-    }
-
-    contextWindowHookInitialization = undefined;
-    disposeContextWindowHookBridge()
-      .then((disposed) => {
-        console.log(
-          '[UnifyChatProvider] Context window hook disposed:',
-          disposed,
-        );
-      })
-      .catch((error) => {
-        console.warn(
-          '[UnifyChatProvider] Failed to dispose context window hook:',
-          error,
-        );
-      });
-  };
-
-  const syncContextWindowHook = (): void => {
-    if (configStore.fix001ContextIndicatorDisplay) {
-      ensureContextWindowHookInitialized();
-      return;
-    }
-
-    disposeContextWindowHook();
-  };
-
-  // Initialize context window hook to try to inject usage data
-  // into VS Code's context window widget when the compatibility fix is enabled.
-  syncContextWindowHook();
 
   // Initialize official models manager
   await officialModelsManager.initialize(
@@ -312,18 +242,13 @@ export async function activate(
   authLog.verbose('main-instance', 'Main-instance handlers registered');
   setMainInstanceReadyIfPossible();
 
-  // Register one language model chat provider per supported provider type so
-  // the model picker can group models by provider family.
-  for (let index = 0; index < PROVIDER_KEYS.length; index += 1) {
-    const providerType = PROVIDER_KEYS[index];
-    const chatProvider = chatProviders[index];
-    const providerRegistration = vscode.lm.registerLanguageModelChatProvider(
-      getLanguageModelVendorId(providerType),
-      chatProvider,
-    );
-    context.subscriptions.push(providerRegistration);
-    context.subscriptions.push(chatProvider);
-  }
+  // Register the language model chat provider.
+  const providerRegistration = vscode.lm.registerLanguageModelChatProvider(
+    VENDOR_ID,
+    chatProvider,
+  );
+  context.subscriptions.push(providerRegistration);
+  context.subscriptions.push(chatProvider);
 
   // Copilot Chat is built into VS Code, but Remote-SSH hosts may not enumerate
   // it early enough for a hard extension dependency to work reliably.
@@ -338,9 +263,7 @@ export async function activate(
   }
 
   // Trigger initial model cache refresh
-  for (const chatProvider of chatProviders) {
-    chatProvider.handleConfigurationChange();
-  }
+  chatProvider.handleConfigurationChange();
 
   // Register commands
   registerCommands(context, configStore, secretStore, uriHandler);
@@ -355,10 +278,7 @@ export async function activate(
   // Re-register provider when configuration changes to pick up new models
   context.subscriptions.push(
     configStore.onDidChange(() => {
-      syncContextWindowHook();
-      for (const chatProvider of chatProviders) {
-        chatProvider.handleConfigurationChange();
-      }
+      chatProvider.handleConfigurationChange();
       enqueueMaintenance('cleanup-unused-secrets-on-config-change', async () => {
         await cleanupUnusedSecrets(secretStore);
       });
@@ -368,18 +288,14 @@ export async function activate(
   // Re-register provider when official models are updated
   context.subscriptions.push(
     officialModelsManager.onDidUpdate(() => {
-      for (const chatProvider of chatProviders) {
-        chatProvider.handleConfigurationChange();
-      }
+      chatProvider.handleConfigurationChange();
     }),
   );
 
   // Re-register provider when balance states are updated
   context.subscriptions.push(
     balanceManager.onDidUpdate(() => {
-      for (const chatProvider of chatProviders) {
-        chatProvider.handleConfigurationChange();
-      }
+      chatProvider.handleConfigurationChange();
     }),
   );
 
@@ -512,6 +428,45 @@ export function registerCommands(
  */
 export function deactivate(): void {
   // Cleanup handled by disposables
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function ensureAgentsWindowSupportConfigured(
+  context: vscode.ExtensionContext,
+): Promise<void> {
+  try {
+    const config = vscode.workspace.getConfiguration(
+      EXTENSIONS_CONFIG_NAMESPACE,
+    );
+    const inspection = config.inspect<unknown>(SUPPORT_AGENTS_WINDOW_SETTING);
+    const globalValue = inspection?.globalValue;
+    const supportAgentsWindow = isRecord(globalValue) ? globalValue : {};
+    const extensionId = context.extension.id;
+
+    if (supportAgentsWindow[extensionId] === false) {
+      return;
+    }
+    if (supportAgentsWindow[extensionId] === true) {
+      return;
+    }
+
+    await config.update(
+      SUPPORT_AGENTS_WINDOW_SETTING,
+      {
+        ...supportAgentsWindow,
+        [extensionId]: true,
+      },
+      vscode.ConfigurationTarget.Global,
+    );
+  } catch (error) {
+    console.warn(
+      '[UnifyChatProvider] Failed to configure Agents window support:',
+      error,
+    );
+  }
 }
 
 let maintenanceQueue: Promise<void> = Promise.resolve();

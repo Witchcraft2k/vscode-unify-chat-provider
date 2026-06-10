@@ -5,6 +5,7 @@ import type { ProviderHttpLogger } from '../../logger';
 import {
   DEFAULT_NORMAL_TIMEOUT_CONFIG,
   FetchMode,
+  isRawBaseUrlEnabled,
   resolveChatNetwork,
   resolveOpenAISdkTimeoutMs,
 } from '../../utils';
@@ -27,6 +28,7 @@ const CODEX_COMMON_REQUEST_FIELDS_TO_DELETE = [
   'prompt_cache_retention',
   'safety_identifier',
   'stream_options',
+  'max_output_tokens',
 ] as const;
 const CODEX_REASONING_SUMMARY_DEFAULTS = {
   maxOutputTokens: undefined,
@@ -36,17 +38,6 @@ const CODEX_REASONING_SUMMARY_DEFAULTS = {
     summary: 'auto',
   },
 } satisfies Pick<ModelConfig, 'maxOutputTokens' | 'thinking'>;
-
-type CodexResponseTool = NonNullable<ResponseCreateParamsBase['tools']>[number];
-type CodexImageGenerationTool = Extract<
-  CodexResponseTool,
-  { type: 'image_generation' }
->;
-
-const CODEX_IMAGE_GENERATION_TOOL: CodexImageGenerationTool = {
-  type: 'image_generation',
-  output_format: 'png',
-};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -85,54 +76,46 @@ function resolveCodexWebSocketBaseUrl(baseUrl: string): string {
   return normalized;
 }
 
-function shouldSkipCodexImageGenerationTool(model: unknown): boolean {
-  return typeof model === 'string' && model.endsWith('spark');
-}
-
-function isImageGenerationTool(tool: CodexResponseTool): boolean {
-  return tool.type === 'image_generation';
-}
-
-function ensureCodexImageGenerationTool(
-  baseBody: ResponseCreateParamsBase,
-): void {
-  if (shouldSkipCodexImageGenerationTool(baseBody.model)) {
-    return;
-  }
-
-  if (!baseBody.tools) {
-    baseBody.tools = [CODEX_IMAGE_GENERATION_TOOL];
-    return;
-  }
-
-  if (baseBody.tools.some(isImageGenerationTool)) {
-    return;
-  }
-
-  baseBody.tools = [...baseBody.tools, CODEX_IMAGE_GENERATION_TOOL];
-}
-
-function ensureCodexImageGenerationToolRecord(
-  record: Record<string, unknown>,
-): void {
-  if (shouldSkipCodexImageGenerationTool(record['model'])) {
-    return;
-  }
-
-  const tools = record['tools'];
-  if (!Array.isArray(tools)) {
-    record['tools'] = [CODEX_IMAGE_GENERATION_TOOL];
-    return;
-  }
-
-  if (
-    tools.some((tool) => isRecord(tool) && tool['type'] === 'image_generation')
-  ) {
-    return;
-  }
-
-  record['tools'] = [...tools, CODEX_IMAGE_GENERATION_TOOL];
-}
+// Temporarily disabled because adding the image generation tool by default can
+// fail text-only Codex requests when the account/group lacks image generation.
+// See https://github.com/smallmain/vscode-unify-chat-provider/issues/202.
+// type CodexResponseTool = NonNullable<ResponseCreateParamsBase['tools']>[number];
+// type CodexImageGenerationTool = Extract<
+//   CodexResponseTool,
+//   { type: 'image_generation' }
+// >;
+//
+// const CODEX_IMAGE_GENERATION_TOOL: CodexImageGenerationTool = {
+//   type: 'image_generation',
+//   output_format: 'png',
+// };
+//
+// function shouldSkipCodexImageGenerationTool(model: unknown): boolean {
+//   return typeof model === 'string' && model.endsWith('spark');
+// }
+//
+// function isImageGenerationTool(tool: CodexResponseTool): boolean {
+//   return tool.type === 'image_generation';
+// }
+//
+// function ensureCodexImageGenerationTool(
+//   baseBody: ResponseCreateParamsBase,
+// ): void {
+//   if (shouldSkipCodexImageGenerationTool(baseBody.model)) {
+//     return;
+//   }
+//
+//   if (!baseBody.tools) {
+//     baseBody.tools = [CODEX_IMAGE_GENERATION_TOOL];
+//     return;
+//   }
+//
+//   if (baseBody.tools.some(isImageGenerationTool)) {
+//     return;
+//   }
+//
+//   baseBody.tools = [...baseBody.tools, CODEX_IMAGE_GENERATION_TOOL];
+// }
 
 function stripInputItemIdsFromRecord(record: Record<string, unknown>): void {
   const input = record['input'];
@@ -167,7 +150,6 @@ function normalizeCodexRequestRecord(
   }
 
   stripInputItemIdsFromRecord(record);
-  ensureCodexImageGenerationToolRecord(record);
 }
 
 function normalizeCodexWebSocketPayload(
@@ -313,6 +295,10 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
   }
 
   protected override resolveWebSocketBaseUrl(client: OpenAI): string {
+    if (isRawBaseUrlEnabled(this.config)) {
+      return client.baseURL;
+    }
+
     return resolveCodexWebSocketBaseUrl(client.baseURL);
   }
 
@@ -334,7 +320,8 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
     delete baseBody.prompt_cache_retention;
     delete baseBody.safety_identifier;
     delete baseBody.stream_options;
-    ensureCodexImageGenerationTool(baseBody);
+    // Temporarily disabled; see https://github.com/smallmain/vscode-unify-chat-provider/issues/202.
+    // ensureCodexImageGenerationTool(baseBody);
   }
 
   protected override createClient(
@@ -346,6 +333,7 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
   ): OpenAI {
     const chatNetwork =
       mode === 'chat' ? resolveChatNetwork(this.config) : undefined;
+    const proxy = chatNetwork?.proxy ?? resolveChatNetwork(this.config).proxy;
     const effectiveTimeout =
       chatNetwork?.timeout ?? DEFAULT_NORMAL_TIMEOUT_CONFIG;
 
@@ -358,6 +346,7 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
       responseTimeoutMs: effectiveTimeout.response,
       logger,
       retryConfig: chatNetwork?.retry,
+      proxy,
       urlTransformer:
         this.config.auth?.method === 'openai-codex'
           ? rewriteToCodexEndpoint

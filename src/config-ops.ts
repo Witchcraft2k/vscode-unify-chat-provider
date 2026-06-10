@@ -55,6 +55,7 @@ export const PROVIDER_CONFIG_KEYS = [
   'type',
   'name',
   'baseUrl',
+  'useRawBaseUrl',
   'transport',
   'serviceTier',
   'auth',
@@ -64,6 +65,7 @@ export const PROVIDER_CONFIG_KEYS = [
   'extraBody',
   'timeout',
   'retry',
+  'proxy',
   'autoFetchOfficialModels',
   'contextCache',
 ] as const satisfies ReadonlyArray<ProviderConfigPersistedKey>;
