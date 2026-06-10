@@ -36,7 +36,11 @@ function formatConfiguredModel(
   if (isUnifyChatProviderVendor(model.vendor)) {
     const parsed = parseExtensionModelId(model.id);
     if (parsed) {
-      return `${getLanguageModelVendorDisplayName(model.vendor)} / ${getProviderPickerDisplayName(parsed.providerName)} / ${parsed.modelId}`;
+      const vendorLabel = getLanguageModelVendorDisplayName(model.vendor);
+      const providerLabel = getProviderPickerDisplayName(parsed.providerName);
+      return vendorLabel === providerLabel
+        ? `${providerLabel} / ${parsed.modelId}`
+        : `${vendorLabel} / ${providerLabel} / ${parsed.modelId}`;
     }
   }
 
@@ -162,14 +166,21 @@ async function pickModel(): Promise<vscode.LanguageModelChat | undefined> {
     throw new NoLanguageModelsAvailableError();
   }
 
-  const items: ModelQuickPickItem[] = models.map((model) => ({
-    label: model.name,
-    description: getExtensionProviderName(model) || getModelVendorLabel(model),
-    detail: isUnifyChatProviderVendor(model.vendor)
-      ? `${getModelVendorLabel(model)} | ${model.id}`
-      : model.id,
-    model,
-  }));
+  const items: ModelQuickPickItem[] = models.map((model) => {
+    const providerLabel = getExtensionProviderName(model);
+    const vendorLabel = getModelVendorLabel(model);
+    return {
+      label: model.name,
+      description: providerLabel || vendorLabel,
+      detail:
+        isUnifyChatProviderVendor(model.vendor) &&
+        providerLabel &&
+        providerLabel !== vendorLabel
+          ? `${vendorLabel} | ${model.id}`
+          : model.id,
+      model,
+    };
+  });
 
   const selected = await vscode.window.showQuickPick(items, {
     placeHolder: t('Choose a language model for commit message generation'),

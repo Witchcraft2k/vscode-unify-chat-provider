@@ -126,8 +126,293 @@
   "contributes": {
     "languageModelChatProviders": [
       {
-        "vendor": "unify-chat-provider",
-        "displayName": "%languageModelChatProviders.displayName%",
+        "vendor": "unify-chat-provider.group-aihubmix",
+        "displayName": "AIHubMix",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-alibaba-cloud-model-studio-china",
+        "displayName": "Alibaba Cloud Model Studio (China)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-alibaba-cloud-model-studio-coding-plan-international",
+        "displayName": "Alibaba Cloud Model Studio (Coding Plan - International)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-alibaba-cloud-model-studio-coding-plan",
+        "displayName": "Alibaba Cloud Model Studio (Coding Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-alibaba-cloud-model-studio-international",
+        "displayName": "Alibaba Cloud Model Studio (International)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-anthropic",
+        "displayName": "Anthropic",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-baidu-qianfan",
+        "displayName": "Baidu Qianfan",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-baidu-qianfan-coding-plan",
+        "displayName": "Baidu Qianfan (Coding Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-byte-plus",
+        "displayName": "Byte Plus",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-cerebras",
+        "displayName": "Cerebras",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-claude-code",
+        "displayName": "Claude Code",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-cline-bot",
+        "displayName": "Cline Bot",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-deepseek",
+        "displayName": "DeepSeek",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-gitee-ai",
+        "displayName": "Gitee AI",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-github-copilot",
+        "displayName": "GitHub Copilot",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-google-ai-studio",
+        "displayName": "Google AI Studio",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-google-antigravity",
+        "displayName": "Google Antigravity",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-google-gemini-cli",
+        "displayName": "Google Gemini CLI",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-google-vertex-ai",
+        "displayName": "Google Vertex AI",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-hugging-face-inference-providers",
+        "displayName": "Hugging Face (Inference Providers)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-kilo-code",
+        "displayName": "Kilo Code",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-longcat",
+        "displayName": "LongCat",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-minimax-china",
+        "displayName": "MiniMax (China)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-minimax-international",
+        "displayName": "MiniMax (International)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-model-scope-api-inference",
+        "displayName": "Model Scope (API-Inference)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-moonshot-ai-china",
+        "displayName": "Moonshot AI (China)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-moonshot-ai-coding-plan",
+        "displayName": "Moonshot AI (Coding Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-moonshot-ai-international",
+        "displayName": "Moonshot AI (International)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-nvidia",
+        "displayName": "Nvidia",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-ollama-cloud",
+        "displayName": "Ollama Cloud",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-ollama-local",
+        "displayName": "Ollama Local",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-open-ai",
+        "displayName": "Open AI",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-openai-codex-chatgpt-plus-pro",
+        "displayName": "OpenAI Codex (ChatGPT Plus/Pro)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-opencode-go",
+        "displayName": "OpenCode Go",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-opencode-zen",
+        "displayName": "OpenCode Zen",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-openrouter",
+        "displayName": "OpenRouter",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-siliconflow-china",
+        "displayName": "SiliconFlow (China)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-siliconflow-international",
+        "displayName": "SiliconFlow (International)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-stepfun-china",
+        "displayName": "StepFun (China)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-stepfun-international",
+        "displayName": "StepFun (International)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-streamlake-vanchin-china-coding-plan",
+        "displayName": "StreamLake Vanchin (China, Coding Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-streamlake-vanchin-china",
+        "displayName": "StreamLake Vanchin (China)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-streamlake-vanchin-international-coding-plan",
+        "displayName": "StreamLake Vanchin (International, Coding Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-streamlake-vanchin-international",
+        "displayName": "StreamLake Vanchin (International)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-synthetic",
+        "displayName": "Synthetic",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-tencent-cloud-china",
+        "displayName": "Tencent Cloud (China)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-volcano-engine",
+        "displayName": "Volcano Engine",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-volcano-engine-coding-plan",
+        "displayName": "Volcano Engine (Coding Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-xai",
+        "displayName": "xAI",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-xiaomi-mimo",
+        "displayName": "Xiaomi MIMO",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-xiaomi-mimo-china-token-plan",
+        "displayName": "Xiaomi MIMO (China, Token Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-xiaomi-mimo-europe-token-plan",
+        "displayName": "Xiaomi MIMO (Europe, Token Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-xiaomi-mimo-singapore-token-plan",
+        "displayName": "Xiaomi MIMO (Singapore, Token Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-z-ai",
+        "displayName": "Z.AI",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-z-ai-coding-plan",
+        "displayName": "Z.AI (Coding Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-zhipu-ai",
+        "displayName": "ZhiPu AI",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-zhipu-ai-coding-plan",
+        "displayName": "ZhiPu AI (Coding Plan)",
+        "managementCommand": "unifyChatProvider.manageProviders"
+      },
+      {
+        "vendor": "unify-chat-provider.group-custom",
+        "displayName": "Other Providers",
         "managementCommand": "unifyChatProvider.manageProviders"
       }
     ],
@@ -210,7 +495,7 @@
           "type": "string",
           "scope": "application",
           "description": "%configuration.modelDisplayNameTemplate.description%",
-          "default": "{modelName}{{ ({providerName})}}"
+          "default": "{modelName}"
         },
         "unifyChatProvider.storeApiKeyInSettings": {
           "type": "boolean",

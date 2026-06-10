@@ -17,7 +17,6 @@ import { createProvider } from './client/utils';
 import {
   formatProviderBadgeSuffixForModelSelection,
   formatModelTooltipForModelSelection,
-  formatProviderDetailForModelSelection,
 } from './ui/form-utils';
 import {
   calculateBackoffDelay,
@@ -54,11 +53,18 @@ import {
 } from './balance';
 import { evaluateBalanceWarning } from './balance/warning-utils';
 import { resolveConfiguredEditToolsForVsCode } from './model-capabilities';
-import { getProviderPickerDisplayName } from './language-model-vendors';
+import {
+  getProviderGroupVendorId,
+  getProviderPickerDisplayName,
+} from './language-model-vendors';
 
 const MODEL_DISPLAY_NAME_PLACEHOLDER_PATTERN =
   /\{(modelId|modelName|modelFamily|providerName|remainingBalance)\}/g;
 const BALANCE_CONFIGURATION_KEY = '__unifyBalance';
+const MODEL_NAME_COLLATOR = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'base',
+});
 
 interface ModelDisplayNameTemplateValues {
   modelId: string;
@@ -93,6 +99,9 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     private readonly secretStore: SecretStore,
     private readonly authManager?: AuthManager,
     private readonly balanceManager?: BalanceManager,
+    private readonly providerGroupDisplayName?: string,
+    private readonly includeUnknownProviderGroups = false,
+    private readonly promptWhenEmpty = false,
   ) {}
 
   /**
@@ -102,6 +111,8 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     options: { silent: boolean },
     _token: vscode.CancellationToken,
   ): Promise<vscode.LanguageModelChatInformation[]> {
+    const visibleProviders = this.getVisibleProviders(this.configStore.endpoints);
+
     // Check if user has configured any providers with models or auto-fetch enabled
     const hasConfiguredProviders = this.configStore.endpoints.some(
       (provider) =>
@@ -109,7 +120,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     );
 
     // If no providers configured and not silent, prompt user to add a provider
-    if (!hasConfiguredProviders && !options.silent) {
+    if (!hasConfiguredProviders && !options.silent && this.promptWhenEmpty) {
       vscode.commands.executeCommand('unifyChatProvider.manageProviders');
     }
 
@@ -117,7 +128,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     const modelDrafts: ModelInfoDraft[] = [];
     const modelNameCounts = new Map<string, number>();
 
-    for (const provider of this.configStore.endpoints) {
+    for (const provider of visibleProviders) {
       const allModels = getAllModelsForProviderSync(provider);
 
       for (const model of allModels) {
@@ -129,6 +140,26 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
         );
       }
     }
+
+    modelDrafts.sort((left, right) => {
+      const providerComparison = MODEL_NAME_COLLATOR.compare(
+        getProviderPickerDisplayName(left.provider.name),
+        getProviderPickerDisplayName(right.provider.name),
+      );
+      if (providerComparison !== 0) {
+        return providerComparison;
+      }
+
+      const modelNameComparison = MODEL_NAME_COLLATOR.compare(
+        left.resolvedModelName,
+        right.resolvedModelName,
+      );
+      if (modelNameComparison !== 0) {
+        return modelNameComparison;
+      }
+
+      return MODEL_NAME_COLLATOR.compare(left.model.id, right.model.id);
+    });
 
     return modelDrafts.map((draft) =>
       this.createModelInfo(
@@ -168,10 +199,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       },
       hasDuplicateModelName,
     );
-    const detail = formatProviderDetailForModelSelection(
-      providerDisplayName,
-      balanceSnapshot,
-    );
+    const detail = formatSummaryLine(balanceSnapshot);
     const pricing = formatPrimaryBadge(balanceSnapshot)?.trim();
     const tooltip = formatModelTooltipForModelSelection(
       provider,
@@ -213,10 +241,6 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       maxInputTokens: model.maxInputTokens ?? DEFAULT_MAX_INPUT_TOKENS,
       maxOutputTokens: model.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
       capabilities,
-      category: {
-        label: providerDisplayName,
-        order: 2,
-      },
       detail,
       tooltip,
       isUserSelectable: true,
@@ -465,6 +489,25 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     return `${this.encodeProviderName(providerName)}/${modelId}`;
   }
 
+  private getVisibleProviders(
+    providers: readonly ProviderConfig[],
+  ): ProviderConfig[] {
+    return providers.filter((provider) => this.isVisibleProvider(provider));
+  }
+
+  private isVisibleProvider(provider: ProviderConfig): boolean {
+    if (!this.providerGroupDisplayName) {
+      return true;
+    }
+
+    const providerDisplayName = getProviderPickerDisplayName(provider.name);
+    if (this.includeUnknownProviderGroups) {
+      return getProviderGroupVendorId(providerDisplayName) === undefined;
+    }
+
+    return providerDisplayName === this.providerGroupDisplayName;
+  }
+
   /**
    * Parse model ID to extract provider and model names
    */
@@ -524,7 +567,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     const provider = this.configStore.endpoints.find(
       (p) => p.name === decodedProviderName,
     );
-    if (!provider) {
+    if (!provider || !this.isVisibleProvider(provider)) {
       return null;
     }
 
