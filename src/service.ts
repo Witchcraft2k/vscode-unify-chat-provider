@@ -24,6 +24,7 @@ import {
   getAllModelsForProvider,
   getAllModelsForProviderSync,
   createUsageDataPart,
+  describeNetworkError,
   isAbortLikeError,
   isPlaceholderModelId,
   resolveMeaningfulError,
@@ -53,7 +54,10 @@ import {
 } from './balance';
 import { evaluateBalanceWarning } from './balance/warning-utils';
 import { resolveConfiguredEditToolsForVsCode } from './model-capabilities';
-import { getProviderPickerDisplayName } from './language-model-vendors';
+import {
+  getProviderGroupVendorId,
+  getProviderPickerDisplayName,
+} from './language-model-vendors';
 
 const MODEL_DISPLAY_NAME_PLACEHOLDER_PATTERN =
   /\{(modelId|modelName|modelFamily|providerName|remainingBalance)\}/g;
@@ -62,6 +66,9 @@ const MODEL_NAME_COLLATOR = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: 'base',
 });
+const RETRYABLE_STREAM_READ_ERROR_CODES = new Set([
+  'stream_read_error',
+]);
 
 interface ModelDisplayNameTemplateValues {
   modelId: string;
@@ -85,7 +92,86 @@ interface BalanceConfigurationOption {
 
 interface UnifyChatServiceOptions {
   providerGroupDisplayName?: string;
+  includeUnknownProviderGroups?: boolean;
   promptWhenEmpty?: boolean;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readStringField(
+  record: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const value = record[key];
+  return typeof value === 'string' && value.trim() ? value : undefined;
+}
+
+function getErrorCause(error: unknown): unknown {
+  return isRecord(error) && 'cause' in error ? error.cause : undefined;
+}
+
+function getRetryableStreamReadErrorFields(error: unknown): {
+  code?: string;
+  message?: string;
+} {
+  if (error instanceof Error) {
+    return { message: error.message };
+  }
+
+  if (!isRecord(error)) {
+    return typeof error === 'string' ? { message: error } : {};
+  }
+
+  const nestedError = isRecord(error.error) ? error.error : undefined;
+  return {
+    code:
+      readStringField(error, 'code') ??
+      (nestedError ? readStringField(nestedError, 'code') : undefined),
+    message:
+      readStringField(error, 'message') ??
+      (nestedError ? readStringField(nestedError, 'message') : undefined),
+  };
+}
+
+function isRetryableStreamReadError(error: unknown): boolean {
+  if (isAbortLikeError(error)) {
+    return false;
+  }
+
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+
+  while (current !== undefined && !seen.has(current)) {
+    seen.add(current);
+
+    const { code, message } = getRetryableStreamReadErrorFields(current);
+    if (code && RETRYABLE_STREAM_READ_ERROR_CODES.has(code)) {
+      return true;
+    }
+
+    const normalizedMessage = message?.toLowerCase();
+    if (normalizedMessage) {
+      const isInternalStreamError =
+        (normalizedMessage.includes('internal_server_error') ||
+          normalizedMessage.includes('internal_error')) &&
+        (normalizedMessage.includes('stream error') ||
+          normalizedMessage.includes('stream id') ||
+          normalizedMessage.includes('received from peer'));
+      if (
+        normalizedMessage.includes('stream_read_error') ||
+        normalizedMessage.includes('stream read error') ||
+        isInternalStreamError
+      ) {
+        return true;
+      }
+    }
+
+    current = getErrorCause(current);
+  }
+
+  return false;
 }
 
 export class UnifyChatService implements vscode.LanguageModelChatProvider {
@@ -93,6 +179,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
   private readonly onDidChangeModelInfoEmitter =
     new vscode.EventEmitter<void>();
   private readonly providerGroupDisplayName: string | undefined;
+  private readonly includeUnknownProviderGroups: boolean;
   private readonly promptWhenEmpty: boolean;
 
   readonly onDidChangeLanguageModelChatInformation =
@@ -106,6 +193,8 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     options: UnifyChatServiceOptions = {},
   ) {
     this.providerGroupDisplayName = options.providerGroupDisplayName;
+    this.includeUnknownProviderGroups =
+      options.includeUnknownProviderGroups ?? false;
     this.promptWhenEmpty = options.promptWhenEmpty ?? false;
   }
 
@@ -194,16 +283,18 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     const balanceSnapshot = balanceState?.snapshot;
     const remainingBalance =
       formatProviderBadgeSuffixForModelSelection(balanceSnapshot);
-    const displayName = this.renderModelDisplayName(
-      {
-        modelId: model.id,
-        modelName: resolvedModelName,
-        modelFamily: resolvedModelFamily,
-        providerName: providerDisplayName,
-        remainingBalance,
-      },
-      hasDuplicateModelName,
-    );
+    const displayName = this.includeUnknownProviderGroups
+      ? `${resolvedModelName} (${providerDisplayName})`
+      : this.renderModelDisplayName(
+          {
+            modelId: model.id,
+            modelName: resolvedModelName,
+            modelFamily: resolvedModelFamily,
+            providerName: providerDisplayName,
+            remainingBalance,
+          },
+          hasDuplicateModelName,
+        );
     const detail = formatSummaryLine(balanceSnapshot);
     const pricing = formatPrimaryBadge(balanceSnapshot)?.trim();
     const tooltip = formatModelTooltipForModelSelection(
@@ -501,11 +592,16 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
   }
 
   private matchesVisibleProvider(provider: ProviderConfig): boolean {
+    const providerDisplayName = getProviderPickerDisplayName(provider.name);
+
+    if (this.includeUnknownProviderGroups) {
+      return getProviderGroupVendorId(providerDisplayName) === undefined;
+    }
+
     if (!this.providerGroupDisplayName) {
       return true;
     }
 
-    const providerDisplayName = getProviderPickerDisplayName(provider.name);
     return providerDisplayName === this.providerGroupDisplayName;
   }
 
@@ -791,11 +887,11 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       }
 
       try {
-        let emptyStreamAttempt = 0;
+        let streamRetryAttempt = 0;
 
         // eslint-disable-next-line no-constant-condition
         while (true) {
-          if (emptyStreamAttempt > 0) {
+          if (streamRetryAttempt > 0) {
             // Reset performance trace for retry
             performanceTrace.tts = Date.now();
             performanceTrace.ttf = 0;
@@ -834,6 +930,27 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
             if (token.isCancellationRequested && isAbortLikeError(error)) {
               // User cancelled the request; treat provider abort errors as expected.
               outcome = 'cancelled';
+            } else if (
+              partCount === 0 &&
+              !token.isCancellationRequested &&
+              isRetryableStreamReadError(error) &&
+              streamRetryAttempt < retryConfig.maxRetries
+            ) {
+              const delayMs = calculateBackoffDelay(
+                streamRetryAttempt,
+                retryConfig,
+              );
+              logger.retry(
+                streamRetryAttempt + 1,
+                retryConfig.maxRetries,
+                0,
+                delayMs,
+                undefined,
+                describeNetworkError(error),
+              );
+              await delay(delayMs, retryAbortController.signal);
+              streamRetryAttempt++;
+              continue;
             } else {
               outcome = 'error';
               const normalizedError = resolveMeaningfulError(error);
@@ -865,21 +982,21 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
           }
 
           // Empty stream (200 OK but no data) — treat as transient and retry
-          if (emptyStreamAttempt >= retryConfig.maxRetries) {
+          if (streamRetryAttempt >= retryConfig.maxRetries) {
             break;
           }
 
           const delayMs = calculateBackoffDelay(
-            emptyStreamAttempt,
+            streamRetryAttempt,
             retryConfig,
           );
           logger.emptyStreamRetry(
-            emptyStreamAttempt + 1,
+            streamRetryAttempt + 1,
             retryConfig.maxRetries,
             delayMs,
           );
           await delay(delayMs, retryAbortController.signal);
-          emptyStreamAttempt++;
+          streamRetryAttempt++;
         }
       } finally {
         retryCancellationListener.dispose();

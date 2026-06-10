@@ -9,6 +9,7 @@ export const LEGACY_LANGUAGE_MODEL_VENDOR_ID = 'unify-chat-provider';
 const PROVIDER_GROUP_VENDOR_PREFIX = `${LEGACY_LANGUAGE_MODEL_VENDOR_ID}.group-`;
 const LANGUAGE_MODEL_VENDOR_DISPLAY_NAME = 'Unify Chat Provider';
 const CUSTOM_PROVIDER_GROUP_DISPLAY_NAME = 'Other Providers';
+const ADDITIONAL_PROVIDER_GROUP_DISPLAY_NAMES = ['Testing Jim'] as const;
 const PROVIDER_PICKER_SUFFIXES = [
   'OpenAI Chat Completion',
   'OpenAI Responses',
@@ -32,9 +33,12 @@ function toProviderGroupVendorSlug(displayName: string): string {
 
 const KNOWN_PROVIDER_GROUP_DISPLAY_NAMES = [
   ...new Set(
-    WELL_KNOWN_PROVIDERS.map((provider) =>
-      getProviderPickerDisplayName(provider.name),
-    ),
+    [
+      ...WELL_KNOWN_PROVIDERS.map((provider) =>
+        getProviderPickerDisplayName(provider.name),
+      ),
+      ...ADDITIONAL_PROVIDER_GROUP_DISPLAY_NAMES,
+    ],
   ),
 ].sort(PROVIDER_GROUP_NAME_COLLATOR.compare);
 
