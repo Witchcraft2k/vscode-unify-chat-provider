@@ -21,6 +21,7 @@ export const CONFIG_NAMESPACE = 'unifyChatProvider';
 const DEFAULT_BALANCE_REFRESH_INTERVAL_MS = 60_000;
 const DEFAULT_BALANCE_THROTTLE_WINDOW_MS = 10_000;
 const DEFAULT_BALANCE_STATUS_BAR_ICON = '$(credit-card)';
+const DEFAULT_DISPLAY_BALANCE_IN_CONFIGURATION = false;
 const DEFAULT_MODEL_DISPLAY_NAME_TEMPLATE = '{modelName}{{ ({providerName})}}';
 const MIN_BALANCE_REFRESH_INTERVAL_MS = 1_000;
 const MIN_BALANCE_THROTTLE_WINDOW_MS = 0;
@@ -39,6 +40,7 @@ const OBSERVED_CONFIG_KEYS = [
   'balanceRefreshIntervalMs',
   'balanceThrottleWindowMs',
   'balanceStatusBarIcon',
+  'displayBalanceInConfiguration',
   'balanceWarning.enabled',
   'balanceWarning.timeThresholdDays',
   'balanceWarning.amountThreshold',
@@ -52,6 +54,7 @@ export interface ExtensionConfiguration {
   storeApiKeyInSettings: boolean;
   balanceRefreshIntervalMs: number;
   balanceThrottleWindowMs: number;
+  displayBalanceInConfiguration: boolean;
   balanceWarning: BalanceWarningConfiguration;
   verbose: boolean;
 }
@@ -164,6 +167,13 @@ export class ConfigStore {
     return typeof raw === 'string' ? raw : DEFAULT_BALANCE_STATUS_BAR_ICON;
   }
 
+  get displayBalanceInConfiguration(): boolean {
+    const raw = this.readConfiguredUnknown('displayBalanceInConfiguration');
+    return typeof raw === 'boolean'
+      ? raw
+      : DEFAULT_DISPLAY_BALANCE_IN_CONFIGURATION;
+  }
+
   get balanceWarningEnabled(): boolean {
     const raw = this.readConfiguredUnknown('balanceWarning.enabled');
     return typeof raw === 'boolean' ? raw : DEFAULT_BALANCE_WARNING_ENABLED;
@@ -215,6 +225,7 @@ export class ConfigStore {
       storeApiKeyInSettings: this.storeApiKeyInSettings,
       balanceRefreshIntervalMs: this.balanceRefreshIntervalMs,
       balanceThrottleWindowMs: this.balanceThrottleWindowMs,
+      displayBalanceInConfiguration: this.displayBalanceInConfiguration,
       balanceWarning: this.balanceWarning,
       verbose: this.verbose,
     };

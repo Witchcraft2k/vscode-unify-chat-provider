@@ -34,7 +34,10 @@ import { SecretStore } from './secret';
 import { AuthManager } from './auth';
 import type { AuthCredential, AuthTokenInfo } from './auth/types';
 import { t } from './i18n';
-import { applyPresetTemplateSelections } from './preset-templates';
+import {
+  applyPresetTemplateSelections,
+  buildPresetTemplateConfigurationSchema,
+} from './preset-templates';
 import { runUiStack } from './ui/router/stack-router';
 import type { UiContext } from './ui/router/types';
 import {
@@ -42,12 +45,19 @@ import {
   resolveTokenCountMultiplier,
   resolveTokenizerId,
 } from './tokenizer/tokenizers';
-import { formatPrimaryBadge, type BalanceManager } from './balance';
+import {
+  formatPrimaryBadge,
+  formatSummaryLine,
+  formatSnapshotLines,
+  type BalanceManager,
+  type BalanceProviderState,
+} from './balance';
 import { evaluateBalanceWarning } from './balance/warning-utils';
 import { resolveConfiguredEditToolsForVsCode } from './model-capabilities';
 
 const MODEL_DISPLAY_NAME_PLACEHOLDER_PATTERN =
   /\{(modelId|modelName|modelFamily|providerName|remainingBalance)\}/g;
+const BALANCE_CONFIGURATION_KEY = '__unifyBalance';
 
 interface ModelDisplayNameTemplateValues {
   modelId: string;
@@ -61,6 +71,12 @@ interface ModelInfoDraft {
   provider: ProviderConfig;
   model: ModelConfig;
   resolvedModelName: string;
+}
+
+interface BalanceConfigurationOption {
+  id: string;
+  label: string;
+  description: string;
 }
 
 export class UnifyChatService implements vscode.LanguageModelChatProvider {
@@ -134,9 +150,10 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
   ): vscode.LanguageModelChatInformation {
     const modelId = this.createModelId(provider.name, model.id);
     const resolvedModelFamily = model.family ?? getBaseModelId(model.id);
-    const balanceSnapshot = this.balanceManager?.getProviderState(
+    const balanceState = this.balanceManager?.getProviderState(
       provider.name,
-    )?.snapshot;
+    );
+    const balanceSnapshot = balanceState?.snapshot;
     const remainingBalance =
       formatProviderBadgeSuffixForModelSelection(balanceSnapshot);
     const displayName = this.renderModelDisplayName(
@@ -181,6 +198,10 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
             imageInput: model.capabilities?.imageInput ?? false,
             editTools,
           };
+    const configurationSchema = this.buildModelConfigurationSchema(
+      model,
+      balanceState,
+    );
 
     return {
       id: modelId,
@@ -194,9 +215,151 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
       tooltip,
       isUserSelectable: true,
       statusIcon,
+      ...(configurationSchema ? { configurationSchema } : {}),
       multiplierNumeric: 1,
       pricing,
     };
+  }
+
+  private buildModelConfigurationSchema(
+    model: ModelConfig,
+    balanceState: BalanceProviderState | undefined,
+  ): vscode.LanguageModelConfigurationSchema | undefined {
+    const properties: Record<string, Record<string, unknown>> = {
+      ...(buildPresetTemplateConfigurationSchema(model)?.properties ?? {}),
+    };
+    const balanceProperty =
+      this.buildBalanceConfigurationProperty(balanceState);
+    if (
+      balanceProperty &&
+      properties[BALANCE_CONFIGURATION_KEY] === undefined &&
+      !this.hasConfigurationGroup(properties, 'tokens')
+    ) {
+      properties[BALANCE_CONFIGURATION_KEY] = balanceProperty;
+    }
+
+    return Object.keys(properties).length > 0 ? { properties } : undefined;
+  }
+
+  private hasConfigurationGroup(
+    properties: Record<string, Record<string, unknown>>,
+    group: string,
+  ): boolean {
+    return Object.values(properties).some(
+      (property) => property['group'] === group,
+    );
+  }
+
+  private buildBalanceConfigurationProperty(
+    state: BalanceProviderState | undefined,
+  ): Record<string, unknown> | undefined {
+    if (!this.configStore.displayBalanceInConfiguration) {
+      return undefined;
+    }
+
+    const options = this.buildBalanceConfigurationOptions(state);
+    if (options.length === 0) {
+      return undefined;
+    }
+
+    return {
+      type: 'string',
+      title: 'Balance',
+      enum: options.map((option) => option.id),
+      enumItemLabels: options.map((option) => option.label),
+      enumDescriptions: options.map((option) => option.description),
+      default: options[0].id,
+      group: 'tokens',
+    };
+  }
+
+  private buildBalanceConfigurationOptions(
+    state: BalanceProviderState | undefined,
+  ): BalanceConfigurationOption[] {
+    const snapshot = state?.snapshot;
+    const primaryOption = this.buildPrimaryBalanceConfigurationOption(state);
+    const options = formatSnapshotLines(snapshot).map((line, index) => {
+      const { label, description } = this.splitBalanceConfigurationLine(line);
+      return {
+        id: `balance-${index}`,
+        label,
+        description,
+      };
+    });
+    const allOptions = primaryOption
+      ? [primaryOption, ...options]
+      : options;
+
+    const lastRefreshAt = this.resolveBalanceLastRefreshAt(state);
+    if (allOptions.length > 0 && lastRefreshAt !== undefined) {
+      allOptions.push({
+        id: 'balance-last-refresh',
+        label: new Date(lastRefreshAt).toLocaleString(),
+        description: t('Last refreshed'),
+      });
+    }
+
+    return allOptions;
+  }
+
+  private buildPrimaryBalanceConfigurationOption(
+    state: BalanceProviderState | undefined,
+  ): BalanceConfigurationOption | undefined {
+    const snapshot = state?.snapshot;
+    const label = formatPrimaryBadge(snapshot)?.trim();
+    if (!label) {
+      return undefined;
+    }
+
+    return {
+      id: 'balance-primary',
+      label,
+      description: formatSummaryLine(snapshot) ?? t('Balance'),
+    };
+  }
+
+  private resolveBalanceLastRefreshAt(
+    state: BalanceProviderState | undefined,
+  ): number | undefined {
+    const lastRefreshAt = state?.lastRefreshAt;
+    if (
+      typeof lastRefreshAt === 'number' &&
+      Number.isFinite(lastRefreshAt) &&
+      lastRefreshAt >= 0
+    ) {
+      return lastRefreshAt;
+    }
+
+    const updatedAt = state?.snapshot?.updatedAt;
+    return typeof updatedAt === 'number' &&
+      Number.isFinite(updatedAt) &&
+      updatedAt >= 0
+      ? updatedAt
+      : undefined;
+  }
+
+  private splitBalanceConfigurationLine(line: string): {
+    label: string;
+    description: string;
+  } {
+    const separatorIndex = line.indexOf(':');
+    if (separatorIndex === -1) {
+      return {
+        label: line,
+        description: line,
+      };
+    }
+
+    const description = line.slice(0, separatorIndex).trim();
+    const label = line.slice(separatorIndex + 1).trim();
+    if (!description || !label) {
+      return {
+        label: line,
+        description: line,
+      };
+    }
+
+    return { label, description };
   }
 
   private renderModelDisplayName(

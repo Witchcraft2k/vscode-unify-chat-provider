@@ -238,6 +238,12 @@
           "description": "%configuration.balanceStatusBarIcon.description%",
           "default": "$(credit-card)"
         },
+        "unifyChatProvider.displayBalanceInConfiguration": {
+          "type": "boolean",
+          "scope": "application",
+          "description": "%configuration.displayBalanceInConfiguration.description%",
+          "default": false
+        },
         "unifyChatProvider.balanceWarning.enabled": {
           "type": "boolean",
           "scope": "application",

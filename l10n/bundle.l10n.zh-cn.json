@@ -831,6 +831,7 @@
   "User ID is required": "用户 ID 不能为空",
   "User balance": "用户余额",
   "Balance": "余额",
+  "Last refreshed": "上次刷新",
   "Balance Details": "余额详情",
   "View all providers...": "查看全部供应商...",
   "View balance monitoring status": "查看余额监控状态",

@@ -445,6 +445,7 @@ Use this feature to monitor provider balances in `Provider Settings`.
 | Model Display Name Template        | `modelDisplayNameTemplate`                   | Template for chat model names. Default: `{modelName}{{ ({providerName})}}`.                           |
 | Balance Refresh Interval           | `balanceRefreshIntervalMs`                   | Periodic refresh interval for provider balances (milliseconds).                                       |
 | Balance Throttle Window            | `balanceThrottleWindowMs`                    | Throttle window for post-request balance refresh (milliseconds).                                      |
+| Display Balance in Configuration   | `displayBalanceInConfiguration`              | Shows refreshed balance information in the model configuration button area. Default: disabled.        |
 | Store API Key in Settings          | `storeApiKeyInSettings`                      | Please see [Cloud Sync Compatibility](#cloud-sync-compatibility) for details.                         |
 | Enable Detailed Logging            | `verbose`                                    | Enables more detailed logging for troubleshooting errors.                                             |
 | Commit Message Buttons             | `commitMessageGeneration.enableButtons`      | Controls whether commit message generation buttons are shown in the Source Control view.              |
