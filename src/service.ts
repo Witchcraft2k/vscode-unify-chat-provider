@@ -53,10 +53,7 @@ import {
 } from './balance';
 import { evaluateBalanceWarning } from './balance/warning-utils';
 import { resolveConfiguredEditToolsForVsCode } from './model-capabilities';
-import {
-  getProviderGroupVendorId,
-  getProviderPickerDisplayName,
-} from './language-model-vendors';
+import { getProviderPickerDisplayName } from './language-model-vendors';
 
 const MODEL_DISPLAY_NAME_PLACEHOLDER_PATTERN =
   /\{(modelId|modelName|modelFamily|providerName|remainingBalance)\}/g;
@@ -86,10 +83,17 @@ interface BalanceConfigurationOption {
   description: string;
 }
 
+interface UnifyChatServiceOptions {
+  providerGroupDisplayName?: string;
+  promptWhenEmpty?: boolean;
+}
+
 export class UnifyChatService implements vscode.LanguageModelChatProvider {
   private readonly clients = new Map<string, ApiProvider>();
   private readonly onDidChangeModelInfoEmitter =
     new vscode.EventEmitter<void>();
+  private readonly providerGroupDisplayName: string | undefined;
+  private readonly promptWhenEmpty: boolean;
 
   readonly onDidChangeLanguageModelChatInformation =
     this.onDidChangeModelInfoEmitter.event;
@@ -99,10 +103,11 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     private readonly secretStore: SecretStore,
     private readonly authManager?: AuthManager,
     private readonly balanceManager?: BalanceManager,
-    private readonly providerGroupDisplayName?: string,
-    private readonly includeUnknownProviderGroups = false,
-    private readonly promptWhenEmpty = false,
-  ) {}
+    options: UnifyChatServiceOptions = {},
+  ) {
+    this.providerGroupDisplayName = options.providerGroupDisplayName;
+    this.promptWhenEmpty = options.promptWhenEmpty ?? false;
+  }
 
   /**
    * Provide information about available models (synchronous, non-blocking)
@@ -492,19 +497,15 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
   private getVisibleProviders(
     providers: readonly ProviderConfig[],
   ): ProviderConfig[] {
-    return providers.filter((provider) => this.isVisibleProvider(provider));
+    return providers.filter((provider) => this.matchesVisibleProvider(provider));
   }
 
-  private isVisibleProvider(provider: ProviderConfig): boolean {
+  private matchesVisibleProvider(provider: ProviderConfig): boolean {
     if (!this.providerGroupDisplayName) {
       return true;
     }
 
     const providerDisplayName = getProviderPickerDisplayName(provider.name);
-    if (this.includeUnknownProviderGroups) {
-      return getProviderGroupVendorId(providerDisplayName) === undefined;
-    }
-
     return providerDisplayName === this.providerGroupDisplayName;
   }
 
@@ -567,7 +568,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     const provider = this.configStore.endpoints.find(
       (p) => p.name === decodedProviderName,
     );
-    if (!provider || !this.isVisibleProvider(provider)) {
+    if (!provider || !this.matchesVisibleProvider(provider)) {
       return null;
     }
 

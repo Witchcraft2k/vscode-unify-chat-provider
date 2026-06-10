@@ -34,7 +34,7 @@ import { authLog } from './logger';
 import { webSocketSessionManager } from './client/websocket-session-manager';
 import { syncBuiltInParamsToAllConfigs } from './sync-built-in-model-params';
 import { registerCommitMessageGeneration } from './commit-message';
-import { LANGUAGE_MODEL_PROVIDER_GROUPS } from './language-model-vendors';
+import { getRegisteredLanguageModelProviderGroups } from './language-model-vendors';
 
 const EXTENSIONS_CONFIG_NAMESPACE = 'extensions';
 const SUPPORT_AGENTS_WINDOW_SETTING = 'supportAgentsWindow';
@@ -215,18 +215,47 @@ export async function activate(
   context.subscriptions.push(balanceManager);
   context.subscriptions.push(webSocketSessionManager);
 
-  const chatProviders = LANGUAGE_MODEL_PROVIDER_GROUPS.map(
-    (group) =>
-      new UnifyChatService(
+  let chatProviders: UnifyChatService[] = [];
+  let providerRegistrations: vscode.Disposable[] = [];
+
+  const registerChatProviders = (): void => {
+    for (const registration of providerRegistrations) {
+      registration.dispose();
+    }
+    providerRegistrations = [];
+
+    for (const chatProvider of chatProviders) {
+      chatProvider.dispose();
+    }
+    chatProviders = [];
+
+    const providerGroups = getRegisteredLanguageModelProviderGroups(
+      configStore.endpoints.map((provider) => provider.name),
+    );
+
+    for (const group of providerGroups) {
+      const chatProvider = new UnifyChatService(
         configStore,
         secretStore,
         authManager,
         balanceManager,
-        group.displayName,
-        group.isCustomFallback === true,
-        group.isCustomFallback === true,
-      ),
-  );
+        {
+          providerGroupDisplayName: group.isCustomFallback
+            ? undefined
+            : group.displayName,
+          promptWhenEmpty: group.isCustomFallback === true,
+        },
+      );
+      const providerRegistration = vscode.lm.registerLanguageModelChatProvider(
+        group.vendorId,
+        chatProvider,
+      );
+      providerRegistrations.push(providerRegistration);
+      chatProviders.push(chatProvider);
+      context.subscriptions.push(providerRegistration);
+      context.subscriptions.push(chatProvider);
+    }
+  };
 
   // Initialize official models manager
   await officialModelsManager.initialize(
@@ -249,16 +278,7 @@ export async function activate(
   setMainInstanceReadyIfPossible();
 
   // Register the language model chat providers.
-  for (let index = 0; index < LANGUAGE_MODEL_PROVIDER_GROUPS.length; index += 1) {
-    const group = LANGUAGE_MODEL_PROVIDER_GROUPS[index];
-    const chatProvider = chatProviders[index];
-    const providerRegistration = vscode.lm.registerLanguageModelChatProvider(
-      group.vendorId,
-      chatProvider,
-    );
-    context.subscriptions.push(providerRegistration);
-    context.subscriptions.push(chatProvider);
-  }
+  registerChatProviders();
 
   // Copilot Chat is built into VS Code, but Remote-SSH hosts may not enumerate
   // it early enough for a hard extension dependency to work reliably.
@@ -290,6 +310,7 @@ export async function activate(
   // Re-register provider when configuration changes to pick up new models
   context.subscriptions.push(
     configStore.onDidChange(() => {
+      registerChatProviders();
       for (const chatProvider of chatProviders) {
         chatProvider.handleConfigurationChange();
       }

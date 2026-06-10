@@ -33,14 +33,18 @@ function formatConfiguredModel(
     return t('Not configured');
   }
 
-  if (isUnifyChatProviderVendor(model.vendor)) {
-    const parsed = parseExtensionModelId(model.id);
-    if (parsed) {
+  const parsed = parseExtensionModelId(model.id);
+  if (parsed) {
+    const providerLabel = getProviderPickerDisplayName(parsed.providerName);
+    if (isUnifyChatProviderVendor(model.vendor)) {
       const vendorLabel = getLanguageModelVendorDisplayName(model.vendor);
-      const providerLabel = getProviderPickerDisplayName(parsed.providerName);
       return vendorLabel === providerLabel
         ? `${providerLabel} / ${parsed.modelId}`
         : `${vendorLabel} / ${providerLabel} / ${parsed.modelId}`;
+    }
+
+    if (model.vendor === providerLabel) {
+      return `${providerLabel} / ${parsed.modelId}`;
     }
   }
 
@@ -71,13 +75,15 @@ function parseExtensionModelId(
 }
 
 function getExtensionProviderName(model: vscode.LanguageModelChat): string {
-  if (!isUnifyChatProviderVendor(model.vendor)) {
+  const parsed = parseExtensionModelId(model.id);
+  if (!parsed) {
     return '';
   }
 
-  return getProviderPickerDisplayName(
-    parseExtensionModelId(model.id)?.providerName ?? '',
-  );
+  const providerLabel = getProviderPickerDisplayName(parsed.providerName);
+  return isUnifyChatProviderVendor(model.vendor) || model.vendor === providerLabel
+    ? providerLabel
+    : '';
 }
 
 function getModelVendorLabel(model: vscode.LanguageModelChat): string {

@@ -60,6 +60,10 @@ const PROVIDER_GROUP_DISPLAY_NAME_BY_VENDOR_ID = new Map(
   LANGUAGE_MODEL_PROVIDER_GROUPS.map((group) => [group.vendorId, group.displayName]),
 );
 
+const KNOWN_PROVIDER_GROUP_BY_DISPLAY_NAME = new Map(
+  KNOWN_PROVIDER_GROUPS.map((group) => [group.displayName, group] as const),
+);
+
 export function getLanguageModelVendorId(providerType?: ProviderType): string {
   return providerType
     ? `${LEGACY_LANGUAGE_MODEL_VENDOR_ID}.${providerType}`
@@ -73,6 +77,32 @@ export function getProviderGroupVendorId(
   return KNOWN_PROVIDER_GROUP_DISPLAY_NAMES_SET.has(resolvedDisplayName)
     ? `${PROVIDER_GROUP_VENDOR_PREFIX}${toProviderGroupVendorSlug(resolvedDisplayName)}`
     : undefined;
+}
+
+export function getRegisteredLanguageModelProviderGroups(
+  providerNames: readonly string[],
+): readonly LanguageModelProviderGroup[] {
+  const displayNames = [
+    ...new Set(providerNames.map((providerName) => getProviderPickerDisplayName(providerName))),
+  ].sort(PROVIDER_GROUP_NAME_COLLATOR.compare);
+
+  if (displayNames.length === 0) {
+    return [
+      {
+        vendorId: `${PROVIDER_GROUP_VENDOR_PREFIX}custom`,
+        displayName: CUSTOM_PROVIDER_GROUP_DISPLAY_NAME,
+        isCustomFallback: true,
+      },
+    ];
+  }
+
+  return displayNames.map(
+    (displayName) =>
+      KNOWN_PROVIDER_GROUP_BY_DISPLAY_NAME.get(displayName) ?? {
+        vendorId: displayName,
+        displayName,
+      },
+  );
 }
 
 export function getLanguageModelVendorType(
