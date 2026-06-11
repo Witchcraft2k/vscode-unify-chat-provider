@@ -142,6 +142,7 @@ export async function authorizeAntigravity(options: {
   url.searchParams.set('state', state);
   url.searchParams.set('access_type', 'offline');
   url.searchParams.set('prompt', 'consent');
+  url.searchParams.set('include_granted_scopes', 'true');
 
   return {
     url: url.toString(),
@@ -564,7 +565,9 @@ export async function refreshAccessToken(options: {
         Accept: '*/*',
         'Accept-Encoding': 'gzip, deflate, br',
         'User-Agent': randomized['User-Agent'],
-        'X-Goog-Api-Client': randomized['X-Goog-Api-Client'],
+        'X-Goog-Api-Client':
+          randomized['X-Goog-Api-Client'] ??
+          GEMINI_CLI_HEADERS['X-Goog-Api-Client'],
       },
       body: new URLSearchParams({
         client_id: ANTIGRAVITY_CLIENT_ID,

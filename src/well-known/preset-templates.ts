@@ -138,7 +138,8 @@ export type VerbosityTemplateOptions = SupportedTemplateOptions<Verbosity>;
 export type ServiceTierTemplateOptions = SupportedTemplateOptions<ServiceTier>;
 
 export interface ThinkingModeTemplateOptions {
-  default?: 'enabled' | 'disabled';
+  default?: 'auto' | 'enabled' | 'disabled';
+  includeAuto?: boolean;
 }
 
 function isReasoningEffortTemplateOptions(
@@ -227,9 +228,23 @@ export function thinkingMode(
   opts?: ThinkingModeTemplateOptions,
 ): PresetTemplate {
   const presets: PresetTemplate['presets'] = [
+    ...(opts?.includeAuto || opts?.default === 'auto'
+      ? [
+          {
+            id: 'auto',
+            name: t('Auto'),
+            description: t('Auto thinking'),
+            config: {
+              thinking: {
+                type: 'auto',
+              },
+            },
+          } satisfies PresetTemplate['presets'][number],
+        ]
+      : []),
     {
       id: 'enabled',
-      name: t('Enabled'),
+      name: t('Thinking'),
       description: t('Enable thinking'),
       config: {
         thinking: {
@@ -239,7 +254,7 @@ export function thinkingMode(
     },
     {
       id: 'disabled',
-      name: t('Disabled'),
+      name: t('Non-Thinking'),
       description: t('Disable thinking'),
       config: {
         thinking: {

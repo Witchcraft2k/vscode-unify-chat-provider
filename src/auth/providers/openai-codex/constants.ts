@@ -6,7 +6,7 @@ export const OPENAI_CODEX_REDIRECT_PATH = '/auth/callback';
 export const OPENAI_CODEX_REDIRECT_URI = `http://localhost:${OPENAI_CODEX_CALLBACK_PORT}${OPENAI_CODEX_REDIRECT_PATH}`;
 
 export const OPENAI_CODEX_SCOPE = 'openid profile email offline_access';
-export const OPENAI_CODEX_ORIGINATOR = 'opencode';
+export const OPENAI_CODEX_ORIGINATOR = 'codex_cli_rs';
 
 export const OPENAI_CODEX_API_ENDPOINT =
   'https://chatgpt.com/backend-api/codex/responses';

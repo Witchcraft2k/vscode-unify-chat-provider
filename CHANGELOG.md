@@ -1,5 +1,34 @@
 # Changelog
 
+## v7.2.0 - 2026-06-11
+
+### Features
+- support OpenAI Responses API context management and sync experimental clients with latest API changes (0ed7a49, SmallMain)
+- sync GitHub Copilot client with latest API changes (523f7b8, SmallMain)
+- sync experimental clients to latest versions (24430db, SmallMain)
+- add thinking effort for NVIDIA MiniMax M2 models (8d9aa12, SmallMain)
+
+### Fixes
+- sync base URL resolution logic (1c99419, SmallMain)
+- sync experimental clients with latest changes (562c809, SmallMain)
+
+## v7.1.2 - 2026-06-10
+
+### Features
+- add Tencent Cloud TokenHub, revamp Alibaba providers, add new models (d4637be, SmallMain)
+
+### Fixes
+- rename thinking mode options to 'Thinking' and 'Non-Thinking' (c4fcb67, SmallMain)
+- update Gemini model aliases and enable Gemma 4 thinking effort (14008b8, SmallMain)
+
+## v7.1.1 - 2026-06-10
+
+### Fixes
+- add retry for stream read errors in chat streaming (de2b7db, SmallMain)
+- improve cancellation and response body lifecycle handling (0164749, SmallMain)
+- disable default image generation tool for Codex and add token count fallback (28e12a1, SmallMain)
+- Ahthropic thinking config handling for effort and budget tokens (59a7d65, SmallMain)
+
 ## v7.1.0 - 2026-06-10
 
 ### Features

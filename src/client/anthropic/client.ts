@@ -160,7 +160,10 @@ export class AnthropicProvider implements ApiProvider {
   protected buildHeaders(
     credential?: AuthTokenInfo,
     modelConfig?: ModelConfig,
-    options?: { stream?: boolean },
+    options?: {
+      stream?: boolean;
+      messages?: readonly vscode.LanguageModelChatRequestMessage[];
+    },
   ): Record<string, string | null> {
     const token = getToken(credential);
 
@@ -188,7 +191,28 @@ export class AnthropicProvider implements ApiProvider {
     anthropicInterleavedThinkingEnabled: boolean;
   }): void {}
 
+  protected shouldEnableFineGrainedToolStreaming(_options: {
+    model: ModelConfig;
+    stream: boolean;
+    toolCount: number;
+  }): boolean {
+    return true;
+  }
+
   protected transformRequestBase(
+    requestBase: Omit<MessageCreateParamsStreaming, 'stream'>,
+    _options: {
+      model: ModelConfig;
+      stream: boolean;
+      credential?: AuthTokenInfo;
+      historyUserId?: string;
+      requestState: { userId?: string };
+    },
+  ): Omit<MessageCreateParamsStreaming, 'stream'> {
+    return requestBase;
+  }
+
+  protected finalizeRequestBase(
     requestBase: Omit<MessageCreateParamsStreaming, 'stream'>,
     _options: {
       model: ModelConfig;
@@ -223,9 +247,16 @@ export class AnthropicProvider implements ApiProvider {
 
   private resolveAnthropicThinkingRequestParam(
     thinking: ModelConfig['thinking'] | undefined,
+    alwaysOnAdaptiveThinking: boolean,
   ): AnthropicThinkingRequestParam | undefined {
     if (thinking === undefined) {
       return undefined;
+    }
+
+    if (alwaysOnAdaptiveThinking) {
+      return thinking.effort !== undefined || thinking.summary !== undefined
+        ? 'effort'
+        : undefined;
     }
 
     const hasBudgetTokens = thinking.budgetTokens !== undefined;
@@ -813,12 +844,22 @@ export class AnthropicProvider implements ApiProvider {
         model.capabilities?.imageInput === true ? 'all' : 'discard',
     });
 
-    const anthropicThinkingRequestParam =
-      this.resolveAnthropicThinkingRequestParam(model.thinking);
-    const thinkingEnabled = this.isAnthropicThinkingEnabled(
-      anthropicThinkingRequestParam,
-      model.thinking,
+    const alwaysOnAdaptiveThinking = isFeatureSupported(
+      FeatureId.AnthropicAlwaysOnAdaptiveThinking,
+      this.config,
+      model,
     );
+    const anthropicThinkingRequestParam =
+      this.resolveAnthropicThinkingRequestParam(
+        model.thinking,
+        alwaysOnAdaptiveThinking,
+      );
+    const thinkingEnabled =
+      alwaysOnAdaptiveThinking ||
+      this.isAnthropicThinkingEnabled(
+        anthropicThinkingRequestParam,
+        model.thinking,
+      );
     const thinkingDisplay = this.resolveThinkingDisplay(model, thinkingEnabled);
     const hasTools = (options.tools && options.tools.length > 0) ?? false;
     const stream = model.stream ?? true;
@@ -826,6 +867,7 @@ export class AnthropicProvider implements ApiProvider {
     const anthropicInterleavedThinkingEnabled =
       thinkingEnabled &&
       hasTools &&
+      !alwaysOnAdaptiveThinking &&
       isFeatureSupported(
         FeatureId.AnthropicInterleavedThinking,
         this.config,
@@ -856,6 +898,11 @@ export class AnthropicProvider implements ApiProvider {
     const fineGrainedToolStreamingEnabled =
       stream === true &&
       (tools?.length ?? 0) > 0 &&
+      this.shouldEnableFineGrainedToolStreaming({
+        model,
+        stream,
+        toolCount: tools?.length ?? 0,
+      }) &&
       isFeatureSupported(
         FeatureId.AnthropicFineGrainedToolStreaming,
         this.config,
@@ -896,7 +943,10 @@ export class AnthropicProvider implements ApiProvider {
       anthropicInterleavedThinkingEnabled,
     });
 
-    const headers = this.buildHeaders(credential, model, { stream });
+    const headers = this.buildHeaders(credential, model, {
+      stream,
+      messages: sanitizedMessages,
+    });
 
     // Pass thinkingEnabled to convertToolChoice to enforce tool_choice restrictions
     const toolChoice = this.applyParallelToolChoice(
@@ -962,16 +1012,18 @@ export class AnthropicProvider implements ApiProvider {
             };
             break;
           case 'effort':
-            if (effort === 'none') {
+            if (effort === 'none' && !alwaysOnAdaptiveThinking) {
               requestBase.thinking = {
                 type: 'disabled',
               };
             } else {
-              requestBase.thinking = {
-                type: 'adaptive',
-                ...(thinkingDisplay ? { display: thinkingDisplay } : {}),
-              };
-              if (effort !== undefined) {
+              if (!alwaysOnAdaptiveThinking || thinkingDisplay) {
+                requestBase.thinking = {
+                  type: 'adaptive',
+                  ...(thinkingDisplay ? { display: thinkingDisplay } : {}),
+                };
+              }
+              if (effort !== undefined && effort !== 'none') {
                 requestBase.output_config ??= {};
                 requestBase.output_config.effort =
                   this.normalizeAnthropicOutputEffort(effort, model);
@@ -995,6 +1047,13 @@ export class AnthropicProvider implements ApiProvider {
       });
 
       Object.assign(requestBase, this.config.extraBody, model.extraBody);
+      requestBase = this.finalizeRequestBase(requestBase, {
+        model,
+        stream,
+        credential,
+        historyUserId,
+        requestState,
+      });
 
       const client = this.createClient(
         logger,

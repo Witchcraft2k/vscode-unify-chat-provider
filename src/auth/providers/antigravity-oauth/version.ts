@@ -2,7 +2,7 @@ const VERSION_URL =
   'https://antigravity-auto-updater-974169037036.us-central1.run.app';
 const CHANGELOG_URL = 'https://antigravity.google/changelog';
 
-export const ANTIGRAVITY_VERSION_FALLBACK = '1.20.6';
+export const ANTIGRAVITY_VERSION_FALLBACK = '1.23.2';
 
 const FETCH_TIMEOUT_MS = 5000;
 const CHANGELOG_SCAN_CHARS = 5000;

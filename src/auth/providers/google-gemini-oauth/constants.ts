@@ -25,6 +25,32 @@ export const GEMINI_CLI_SCOPES = [
   'https://www.googleapis.com/auth/userinfo.profile',
 ] as const;
 
+export const GEMINI_CLI_AI_STUDIO_SCOPES = [
+  'https://www.googleapis.com/auth/cloud-platform',
+  'https://www.googleapis.com/auth/generative-language.retriever',
+] as const;
+
+export type GeminiCliOAuthType = 'code_assist' | 'ai_studio' | 'google_one';
+
+export function normalizeGeminiCliOAuthType(
+  oauthType: string | undefined,
+): GeminiCliOAuthType {
+  if (oauthType === 'ai_studio' || oauthType === 'google_one') {
+    return oauthType;
+  }
+  return 'code_assist';
+}
+
+export function getGeminiCliOAuthScopes(
+  oauthType: string | undefined,
+): readonly string[] {
+  const normalized = normalizeGeminiCliOAuthType(oauthType);
+  if (normalized === 'ai_studio') {
+    return GEMINI_CLI_AI_STUDIO_SCOPES;
+  }
+  return GEMINI_CLI_SCOPES;
+}
+
 /**
  * Default project ID for Gemini CLI.
  * This is used when no specific project is provided.
@@ -48,7 +74,7 @@ export const GEMINI_CLI_ENDPOINT_FALLBACKS = [
  * These mimic the official gemini-cli behavior.
  */
 export const GEMINI_CLI_API_HEADERS = {
-  'User-Agent': 'google-api-nodejs-client/10.3.0',
+  'User-Agent': 'GeminiCLI/0.1.5 (Windows; AMD64)',
   'X-Goog-Api-Client': 'gl-node/22.18.0',
   'Client-Metadata':
     'ideType=IDE_UNSPECIFIED,platform=PLATFORM_UNSPECIFIED,pluginType=GEMINI',
@@ -69,50 +95,19 @@ export const GEMINI_CLI_CODE_ASSIST_PROVISION_HEADERS = {
   }),
 } as const;
 
-/**
- * Randomized header pools for Gemini CLI API requests.
- * Used to vary headers slightly across requests.
- */
-export const GEMINI_CLI_API_HEADERS_POOL = {
-  'User-Agent': [
-    'google-api-nodejs-client/10.3.0',
-    'google-api-nodejs-client/9.15.1',
-    'google-api-nodejs-client/9.14.0',
-    'google-api-nodejs-client/9.13.0',
-  ],
-  'X-Goog-Api-Client': [
-    'gl-node/22.18.0',
-    'gl-node/22.17.0',
-    'gl-node/22.12.0',
-    'gl-node/20.18.0',
-    'gl-node/21.7.0',
-  ],
-  'Client-Metadata': [GEMINI_CLI_API_HEADERS['Client-Metadata']],
-} as const;
-
 export type GeminiCliApiHeaderSet = {
   'User-Agent': string;
   'X-Goog-Api-Client': string;
   'Client-Metadata': string;
 };
 
-function randomFrom<const T>(values: readonly T[]): T {
-  const first = values.at(0);
-  if (first === undefined) {
-    throw new Error('Cannot sample from an empty array');
-  }
-  const idx = Math.floor(Math.random() * values.length);
-  const selected = values[idx];
-  return selected === undefined ? first : selected;
-}
-
 /**
- * Get randomized headers for Gemini CLI API requests.
+ * Get fixed Gemini CLI API headers.
  */
 export function getGeminiCliRandomizedHeaders(): GeminiCliApiHeaderSet {
   return {
-    'User-Agent': randomFrom(GEMINI_CLI_API_HEADERS_POOL['User-Agent']),
-    'X-Goog-Api-Client': randomFrom(GEMINI_CLI_API_HEADERS_POOL['X-Goog-Api-Client']),
+    'User-Agent': GEMINI_CLI_API_HEADERS['User-Agent'],
+    'X-Goog-Api-Client': GEMINI_CLI_API_HEADERS['X-Goog-Api-Client'],
     'Client-Metadata': GEMINI_CLI_API_HEADERS['Client-Metadata'],
   };
 }

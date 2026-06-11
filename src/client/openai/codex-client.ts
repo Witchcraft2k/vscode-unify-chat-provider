@@ -13,22 +13,33 @@ import type { ModelConfig } from '../../types';
 import { createCustomFetch, getToken } from '../utils';
 import { OpenAIResponsesProvider } from './responses-client';
 import { randomUUID } from 'crypto';
+import { codexBaseInstructionsForModel } from './codex-instructions';
 import type {
   ResponseCreateParamsBase,
   ResponsesClientEvent,
 } from 'openai/resources/responses/responses';
 
 const CODEX_API_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
-const CODEX_CLIENT_VERSION = '';
-const CODEX_USER_AGENT =
-  'codex-tui/0.118.0 (Mac OS 26.3.1; arm64) iTerm.app/3.6.9 (codex-tui; 0.118.0)';
-const CODEX_ORIGINATOR = 'codex-tui';
+const CODEX_CLIENT_VERSION = '0.125.0';
+const CODEX_CLI_USER_AGENT =
+  'codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color';
+const CODEX_TUI_USER_AGENT =
+  'codex-tui/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.125.0)';
+const CODEX_ORIGINATOR = 'codex_cli_rs';
+const CODEX_RESPONSES_HTTP_BETA = 'responses=experimental';
 const CODEX_RESPONSES_WEBSOCKET_BETA = 'responses_websockets=2026-02-06';
 const CODEX_COMMON_REQUEST_FIELDS_TO_DELETE = [
+  'user',
+  'metadata',
   'prompt_cache_retention',
   'safety_identifier',
   'stream_options',
   'max_output_tokens',
+  'max_completion_tokens',
+  'temperature',
+  'top_p',
+  'frequency_penalty',
+  'presence_penalty',
 ] as const;
 const CODEX_REASONING_SUMMARY_DEFAULTS = {
   maxOutputTokens: undefined,
@@ -38,7 +49,6 @@ const CODEX_REASONING_SUMMARY_DEFAULTS = {
     summary: 'auto',
   },
 } satisfies Pick<ModelConfig, 'maxOutputTokens' | 'thinking'>;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -133,6 +143,22 @@ function stripInputItemIdsFromRecord(record: Record<string, unknown>): void {
   });
 }
 
+function ensureCodexReasoningInclude(record: Record<string, unknown>): void {
+  if (!isRecord(record['reasoning'])) {
+    return;
+  }
+
+  const include = record['include'];
+  if (!Array.isArray(include)) {
+    record['include'] = ['reasoning.encrypted_content'];
+    return;
+  }
+
+  if (!include.includes('reasoning.encrypted_content')) {
+    record['include'] = [...include, 'reasoning.encrypted_content'];
+  }
+}
+
 function normalizeCodexRequestRecord(
   record: Record<string, unknown>,
   options: { deletePreviousResponseId: boolean },
@@ -145,9 +171,19 @@ function normalizeCodexRequestRecord(
     delete record['previous_response_id'];
   }
 
-  if (record['instructions'] === undefined || record['instructions'] === null) {
-    record['instructions'] = '';
+  if (
+    record['instructions'] === undefined ||
+    record['instructions'] === null ||
+    (typeof record['instructions'] === 'string' &&
+      record['instructions'].trim() === '')
+  ) {
+    record['instructions'] = codexBaseInstructionsForModel(record['model']);
   }
+  record['store'] = false;
+  if (record['stream'] === undefined) {
+    record['stream'] = true;
+  }
+  ensureCodexReasoningInclude(record);
 
   stripInputItemIdsFromRecord(record);
 }
@@ -208,7 +244,19 @@ function setHeaderIfMissing(
   }
 }
 
+function resolveCodexUserAgent(authMethod: string | undefined): string {
+  return authMethod === 'openai-codex'
+    ? CODEX_CLI_USER_AGENT
+    : CODEX_TUI_USER_AGENT;
+}
+
 export class OpenAICodexProvider extends OpenAIResponsesProvider {
+  protected override shouldEnableResponsesContextManagement(
+    model: ModelConfig,
+  ): boolean {
+    return this.isResponsesContextManagementModelSupported(model);
+  }
+
   protected override getInputMessageRole(
     role: vscode.LanguageModelChatMessageRole,
   ) {
@@ -234,15 +282,16 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
     deleteHeaderVariants(headers, 'conversation_id');
     deleteHeaderVariants(headers, 'version');
     deleteHeaderVariants(headers, 'chatgpt-account-id');
+    deleteHeaderVariants(headers, 'openai-beta');
 
-    headers['User-Agent'] = CODEX_USER_AGENT;
-    if (CODEX_USER_AGENT.includes('Mac OS')) {
-      headers['Session_id'] = sessionId;
-    }
+    headers['User-Agent'] = resolveCodexUserAgent(this.config.auth?.method);
+    headers['Session_id'] = sessionId;
+    headers['Conversation_id'] = sessionId;
     headers['Version'] = CODEX_CLIENT_VERSION;
     setHeaderIfMissing(headers, 'X-Codex-Turn-Metadata', '');
     setHeaderIfMissing(headers, 'X-Client-Request-Id', '');
     headers['Connection'] = 'Keep-Alive';
+    headers['OpenAI-Beta'] = CODEX_RESPONSES_HTTP_BETA;
 
     const auth = this.config.auth;
     if (auth?.method === 'openai-codex') {
@@ -312,10 +361,12 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
     sessionId: string,
     baseBody: ResponseCreateParamsBase,
   ): void {
+    normalizeCodexRequestRecord(baseBody as unknown as Record<string, unknown>, {
+      deletePreviousResponseId: false,
+    });
     Object.assign(baseBody, {
       store: false,
       prompt_cache_key: sessionId,
-      instructions: '',
     });
     delete baseBody.prompt_cache_retention;
     delete baseBody.safety_identifier;
