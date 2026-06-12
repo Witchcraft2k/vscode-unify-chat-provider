@@ -1,5 +1,35 @@
 # Changelog
 
+## v7.4.0 - 2026-06-12
+
+### Features
+- add Grok 4.3, Grok Build 0.1, and Composer 2.5 models (bfdf459, SmallMain)
+
+## v7.3.0 - 2026-06-12
+
+### Features
+- add Kimi K2.7 Code model (2a18e04, SmallMain)
+- rename xAI Grok OAuth to xAI Grok Build and update related definitions and documentation (9655e29, SmallMain)
+- add xAI Grok OAuth (SuperGrok / X Premium+) support (d6a86d9, m1n)
+
+### Fixes
+- xai-grok-oauth: document required 127.0.0.1 redirect and improve bare code / fragment parsing (07df60a, m1n)
+
+## v7.2.2 - 2026-06-12
+
+### Fixes
+- update Claude Code client to support JSON metadata format and fix Antigravity/Gemini CLI user agent/scopes (f16b387, SmallMain)
+
+## v7.2.1 - 2026-06-11
+
+### Features
+- add "Generate All Changes" command option in README (4e275be, SmallMain)
+- add 'Generate All Changes' command and auto-scope for commit messages (6a21ab5, SmallMain)
+- surface abnormal stop reasons as errors across providers (bcc9067, SmallMain)
+
+### Other
+- Support New API quota transform (5981281, 董艺宽)
+
 ## v7.2.0 - 2026-06-11
 
 ### Features
