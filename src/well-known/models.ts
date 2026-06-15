@@ -3811,6 +3811,21 @@ const _WELL_KNOWN_MODELS = [
     },
   },
   {
+    id: 'glm-5.2',
+    name: 'GLM-5.2',
+    maxInputTokens: 1000000,
+    maxOutputTokens: 128000,
+    stream: true,
+    thinking: {
+      type: 'enabled',
+    },
+    capabilities: {
+      toolCalling: true,
+      imageInput: false,
+    },
+    presetTemplates: [thinkingMode()],
+  },
+  {
     id: 'glm-5.1',
     overrides: [
       {
@@ -4231,8 +4246,6 @@ const _WELL_KNOWN_MODELS = [
         matchers: ['api.x.ai'],
         config: {
           id: 'grok-composer-2.5-fast',
-          maxInputTokens: 131072,
-          maxOutputTokens: 32768,
         },
       },
     ],
@@ -4243,10 +4256,6 @@ const _WELL_KNOWN_MODELS = [
     capabilities: {
       toolCalling: true,
       imageInput: true,
-    },
-    thinking: {
-      type: 'enabled',
-      effort: 'high',
     },
   },
   {
@@ -4259,16 +4268,6 @@ const _WELL_KNOWN_MODELS = [
       toolCalling: true,
       imageInput: true,
     },
-    thinking: {
-      type: 'enabled',
-      effort: 'high',
-    },
-    presetTemplates: [
-      reasoningEffort({
-        supported: GROK_4_3_REASONING_EFFORTS,
-        default: 'high',
-      }),
-    ],
   },
   {
     id: 'grok-4.3',

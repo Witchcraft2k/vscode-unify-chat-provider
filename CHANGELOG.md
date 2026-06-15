@@ -1,5 +1,21 @@
 # Changelog
 
+## v7.5.0 - 2026-06-13
+
+### Features
+- add GLM-5.2 model with thinking support to providers (35922f0, SmallMain)
+
+## v7.4.2 - 2026-06-12
+
+### Fixes
+- remove max tokens config from Grok Composer 2.5 Fast (d4db31f, SmallMain)
+
+## v7.4.1 - 2026-06-12
+
+### Fixes
+- remove thinking effort from Grok Build 0.1 and Composer 2.5 models (1d3b127, SmallMain)
+- settings.json add xAI Grok Build provider support (09eb8cd, SmallMain)
+
 ## v7.4.0 - 2026-06-12
 
 ### Features
