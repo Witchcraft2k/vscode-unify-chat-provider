@@ -54,7 +54,10 @@ import {
 } from './balance';
 import { evaluateBalanceWarning } from './balance/warning-utils';
 import { resolveConfiguredEditToolsForVsCode } from './model-capabilities';
-import { getProviderPickerDisplayName } from './language-model-vendors';
+import {
+  getProviderGroupVendorId,
+  getProviderPickerDisplayName,
+} from './language-model-vendors';
 
 const MODEL_DISPLAY_NAME_PLACEHOLDER_PATTERN =
   /\{(modelId|modelName|modelFamily|providerName|remainingBalance)\}/g;
@@ -63,7 +66,6 @@ const MODEL_NAME_COLLATOR = new Intl.Collator(undefined, {
   numeric: true,
   sensitivity: 'base',
 });
-
 const RETRYABLE_STREAM_READ_ERROR_CODES = new Set([
   'stream_read_error',
 ]);
@@ -90,6 +92,7 @@ interface BalanceConfigurationOption {
 
 interface UnifyChatServiceOptions {
   providerGroupDisplayName?: string;
+  includeUnknownProviderGroups?: boolean;
   promptWhenEmpty?: boolean;
 }
 
@@ -176,6 +179,7 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
   private readonly onDidChangeModelInfoEmitter =
     new vscode.EventEmitter<void>();
   private readonly providerGroupDisplayName: string | undefined;
+  private readonly includeUnknownProviderGroups: boolean;
   private readonly promptWhenEmpty: boolean;
 
   readonly onDidChangeLanguageModelChatInformation =
@@ -189,6 +193,8 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     options: UnifyChatServiceOptions = {},
   ) {
     this.providerGroupDisplayName = options.providerGroupDisplayName;
+    this.includeUnknownProviderGroups =
+      options.includeUnknownProviderGroups ?? false;
     this.promptWhenEmpty = options.promptWhenEmpty ?? false;
   }
 
@@ -277,16 +283,18 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
     const balanceSnapshot = balanceState?.snapshot;
     const remainingBalance =
       formatProviderBadgeSuffixForModelSelection(balanceSnapshot);
-    const displayName = this.renderModelDisplayName(
-      {
-        modelId: model.id,
-        modelName: resolvedModelName,
-        modelFamily: resolvedModelFamily,
-        providerName: providerDisplayName,
-        remainingBalance,
-      },
-      hasDuplicateModelName,
-    );
+    const displayName = this.includeUnknownProviderGroups
+      ? `${resolvedModelName} (${providerDisplayName})`
+      : this.renderModelDisplayName(
+          {
+            modelId: model.id,
+            modelName: resolvedModelName,
+            modelFamily: resolvedModelFamily,
+            providerName: providerDisplayName,
+            remainingBalance,
+          },
+          hasDuplicateModelName,
+        );
     const detail = formatSummaryLine(balanceSnapshot);
     const pricing = formatPrimaryBadge(balanceSnapshot)?.trim();
     const tooltip = formatModelTooltipForModelSelection(
@@ -584,11 +592,16 @@ export class UnifyChatService implements vscode.LanguageModelChatProvider {
   }
 
   private matchesVisibleProvider(provider: ProviderConfig): boolean {
+    const providerDisplayName = getProviderPickerDisplayName(provider.name);
+
+    if (this.includeUnknownProviderGroups) {
+      return getProviderGroupVendorId(providerDisplayName) === undefined;
+    }
+
     if (!this.providerGroupDisplayName) {
       return true;
     }
 
-    const providerDisplayName = getProviderPickerDisplayName(provider.name);
     return providerDisplayName === this.providerGroupDisplayName;
   }
 
