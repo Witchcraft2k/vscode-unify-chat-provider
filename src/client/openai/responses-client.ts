@@ -2362,7 +2362,7 @@ export class OpenAIResponsesProvider implements ApiProvider {
     const normalizedUsage = createCopilotUsage(
       usage.input_tokens,
       usage.output_tokens,
-      usage.input_tokens_details.cached_tokens,
+      usage.input_tokens_details?.cached_tokens,
     );
     sharedProcessUsage(requestTrace, logger, normalizedUsage);
   }
