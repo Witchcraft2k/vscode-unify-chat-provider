@@ -1,29 +1,15 @@
 import * as vscode from 'vscode';
+import { pickLanguageModel } from '../language-model-picker';
 import {
   inspectCommitMessageModelConfiguration,
   readCommitMessageGenerationConfiguration,
   updateCommitMessageModelConfiguration,
 } from './config';
 import type { CommitMessageGenerationModelConfiguration } from './types';
-import { NoLanguageModelsAvailableError } from './types';
 import { t } from '../i18n';
-import {
-  getLanguageModelVendorDisplayName,
-  getProviderPickerDisplayName,
-  isUnifyChatProviderVendor,
-} from '../language-model-vendors';
-
-const MODEL_NAME_COLLATOR = new Intl.Collator(undefined, {
-  numeric: true,
-  sensitivity: 'base',
-});
 
 interface ConfigurationTargetQuickPickItem extends vscode.QuickPickItem {
   target: vscode.ConfigurationTarget;
-}
-
-interface ModelQuickPickItem extends vscode.QuickPickItem {
-  model: vscode.LanguageModelChat;
 }
 
 function formatConfiguredModel(
@@ -33,97 +19,7 @@ function formatConfiguredModel(
     return t('Not configured');
   }
 
-  const parsed = parseExtensionModelId(model.id);
-  if (parsed) {
-    const providerLabel = getProviderPickerDisplayName(parsed.providerName);
-    if (isUnifyChatProviderVendor(model.vendor)) {
-      const vendorLabel = getLanguageModelVendorDisplayName(model.vendor);
-      return vendorLabel === providerLabel
-        ? `${providerLabel} / ${parsed.modelId}`
-        : `${vendorLabel} / ${providerLabel} / ${parsed.modelId}`;
-    }
-
-    if (model.vendor === providerLabel) {
-      return `${providerLabel} / ${parsed.modelId}`;
-    }
-  }
-
   return `${model.vendor}/${model.id}`;
-}
-
-function parseExtensionModelId(
-  modelId: string,
-): { providerName: string; modelId: string } | undefined {
-  const slashIndex = modelId.indexOf('/');
-  if (slashIndex === -1) {
-    return undefined;
-  }
-
-  const encodedProviderName = modelId.slice(0, slashIndex);
-  const resolvedModelId = modelId.slice(slashIndex + 1);
-  try {
-    return {
-      providerName: decodeURIComponent(encodedProviderName),
-      modelId: resolvedModelId,
-    };
-  } catch {
-    return {
-      providerName: encodedProviderName,
-      modelId: resolvedModelId,
-    };
-  }
-}
-
-function getExtensionProviderName(model: vscode.LanguageModelChat): string {
-  const parsed = parseExtensionModelId(model.id);
-  if (!parsed) {
-    return '';
-  }
-
-  const providerLabel = getProviderPickerDisplayName(parsed.providerName);
-  return isUnifyChatProviderVendor(model.vendor) || model.vendor === providerLabel
-    ? providerLabel
-    : '';
-}
-
-function getModelVendorLabel(model: vscode.LanguageModelChat): string {
-  return isUnifyChatProviderVendor(model.vendor)
-    ? getLanguageModelVendorDisplayName(model.vendor)
-    : model.vendor;
-}
-
-async function getAvailableLanguageModels(): Promise<vscode.LanguageModelChat[]> {
-  const models = await vscode.lm.selectChatModels();
-  const dedupedModels = new Map<string, vscode.LanguageModelChat>();
-
-  for (const model of models) {
-    dedupedModels.set(`${model.vendor}/${model.id}`, model);
-  }
-
-  return [...dedupedModels.values()].sort((left, right) => {
-    const vendorComparison = MODEL_NAME_COLLATOR.compare(
-      getModelVendorLabel(left),
-      getModelVendorLabel(right),
-    );
-    if (vendorComparison !== 0) {
-      return vendorComparison;
-    }
-
-    const providerComparison = MODEL_NAME_COLLATOR.compare(
-      getExtensionProviderName(left),
-      getExtensionProviderName(right),
-    );
-    if (providerComparison !== 0) {
-      return providerComparison;
-    }
-
-    const nameComparison = MODEL_NAME_COLLATOR.compare(left.name, right.name);
-    if (nameComparison !== 0) {
-      return nameComparison;
-    }
-
-    return MODEL_NAME_COLLATOR.compare(left.id, right.id);
-  });
 }
 
 function createConfigurationTargetItems(): ConfigurationTargetQuickPickItem[] {
@@ -166,37 +62,6 @@ async function pickConfigurationTarget(): Promise<vscode.ConfigurationTarget | u
   return selected?.target;
 }
 
-async function pickModel(): Promise<vscode.LanguageModelChat | undefined> {
-  const models = await getAvailableLanguageModels();
-  if (models.length === 0) {
-    throw new NoLanguageModelsAvailableError();
-  }
-
-  const items: ModelQuickPickItem[] = models.map((model) => {
-    const providerLabel = getExtensionProviderName(model);
-    const vendorLabel = getModelVendorLabel(model);
-    return {
-      label: model.name,
-      description: providerLabel || vendorLabel,
-      detail:
-        isUnifyChatProviderVendor(model.vendor) &&
-        providerLabel &&
-        providerLabel !== vendorLabel
-          ? `${vendorLabel} | ${model.id}`
-          : model.id,
-      model,
-    };
-  });
-
-  const selected = await vscode.window.showQuickPick(items, {
-    placeHolder: t('Choose a language model for commit message generation'),
-    matchOnDescription: true,
-    matchOnDetail: true,
-  });
-
-  return selected?.model;
-}
-
 export async function changeCommitMessageModelConfiguration(): Promise<
   vscode.LanguageModelChat | undefined
 > {
@@ -205,9 +70,18 @@ export async function changeCommitMessageModelConfiguration(): Promise<
     return undefined;
   }
 
-  const model = await pickModel();
-  if (!model) {
+  const selectedModel = await pickLanguageModel({
+    placeHolder: t('Choose a language model for commit message generation'),
+  });
+  if (!selectedModel) {
     return undefined;
+  }
+  if (selectedModel.kind === 'default') {
+    return undefined;
+  }
+  const model = selectedModel.resolvedModel;
+  if (!model) {
+    throw new vscode.CancellationError();
   }
 
   const configuration = {
@@ -236,18 +110,8 @@ async function resolveConfiguredModel(
     vendor: model.vendor,
     id: model.id,
   });
-  if (models[0]) {
-    return models[0];
-  }
 
-  if (!isUnifyChatProviderVendor(model.vendor)) {
-    return undefined;
-  }
-
-  const fallbackModels = await vscode.lm.selectChatModels({ id: model.id });
-  return fallbackModels.find((candidate) =>
-    isUnifyChatProviderVendor(candidate.vendor),
-  );
+  return models[0];
 }
 
 export async function resolveCommitMessageGenerationModel(): Promise<vscode.LanguageModelChat> {
