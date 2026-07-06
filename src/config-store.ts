@@ -29,7 +29,8 @@ const DEFAULT_BALANCE_REFRESH_INTERVAL_MS = 60_000;
 const DEFAULT_BALANCE_THROTTLE_WINDOW_MS = 10_000;
 const DEFAULT_BALANCE_STATUS_BAR_ICON = '$(credit-card)';
 const DEFAULT_DISPLAY_BALANCE_IN_CONFIGURATION = false;
-const DEFAULT_MODEL_DISPLAY_NAME_TEMPLATE = '{modelName}';
+const DEFAULT_MODEL_DISPLAY_NAME_TEMPLATE = '{modelName}{{ ({providerName})}}';
+const DEFAULT_PROVIDER_LIST_NEWEST_FIRST = true;
 const MIN_BALANCE_REFRESH_INTERVAL_MS = 1_000;
 const MIN_BALANCE_THROTTLE_WINDOW_MS = 0;
 const DEFAULT_BALANCE_WARNING_ENABLED = true;
@@ -53,6 +54,7 @@ const OBSERVED_CONFIG_KEYS = [
   'balanceWarning.amountThreshold',
   'balanceWarning.tokenThresholdMillions',
   'networkSettings',
+  'providerList.newestFirst',
 ] as const;
 
 /** Extension configuration stored in VS Code application-scoped user settings. */
@@ -143,6 +145,15 @@ export class ConfigStore {
   get storeApiKeyInSettings(): boolean {
     const raw = this.readConfiguredUnknown('storeApiKeyInSettings');
     return typeof raw === 'boolean' ? raw : false;
+  }
+
+  /**
+   * Whether the Manage Providers panel lists recently added or modified
+   * providers first.
+   */
+  get providerListNewestFirst(): boolean {
+    const raw = this.readConfiguredUnknown('providerList.newestFirst');
+    return typeof raw === 'boolean' ? raw : DEFAULT_PROVIDER_LIST_NEWEST_FIRST;
   }
 
   /**
@@ -572,6 +583,20 @@ export class ConfigStore {
     await config.update(
       'endpoints',
       endpoints,
+      vscode.ConfigurationTarget.Global,
+    );
+  }
+
+  /**
+   * Set whether the Manage Providers panel lists recently added or modified
+   * providers first.
+   * Always writes to application-scoped user settings.
+   */
+  async setProviderListNewestFirst(value: boolean): Promise<void> {
+    const config = vscode.workspace.getConfiguration(CONFIG_NAMESPACE);
+    await config.update(
+      'providerList.newestFirst',
+      value,
       vscode.ConfigurationTarget.Global,
     );
   }
