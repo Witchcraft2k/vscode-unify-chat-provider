@@ -1,5 +1,20 @@
 # Changelog
 
+## v7.9.2 - 2026-07-07
+
+### Fixes
+- remove FeatureId-based gating for 1M context beta on Anthropic models (d9d2ba1, SmallMain)
+
+## v7.9.1 - 2026-07-06
+
+### Features
+- enable reasoning_effort for GLM-5.2-nano models (450d8d1, SmallMain)
+- well-known: add z-ai/glm-5.2 override for GLM-5.2 model (63926b8, SmallMain)
+- provider-list: add sort-order toggle for Manage Providers panel (9c38efb, dunxuan)
+
+### Refactors
+- relocate default constant and update provider sort descriptions (b3e4a5a, SmallMain)
+
 ## v7.9.0 - 2026-07-03
 
 ### Features
