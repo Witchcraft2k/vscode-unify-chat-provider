@@ -11,22 +11,20 @@ import {
 } from '../../utils';
 import type { ModelConfig } from '../../types';
 import { createCustomFetch, getToken } from '../utils';
-import { OpenAIResponsesProvider } from './responses-client';
+import {
+  OpenAIResponsesProvider,
+  type OpenAIResponsesClientEvent,
+  type OpenAIResponsesRequestBody,
+} from './responses-client';
 import { randomUUID } from 'crypto';
 import { codexBaseInstructionsForModel } from './codex-instructions';
-import type {
-  ResponseCreateParamsBase,
-  ResponsesClientEvent,
-} from 'openai/resources/responses/responses';
 
 const CODEX_API_ENDPOINT = 'https://chatgpt.com/backend-api/codex/responses';
-const CODEX_CLIENT_VERSION = '0.125.0';
-const CODEX_CLI_USER_AGENT =
-  'codex_cli_rs/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color';
-const CODEX_TUI_USER_AGENT =
-  'codex-tui/0.125.0 (Ubuntu 22.4.0; x86_64) xterm-256color (codex-tui; 0.125.0)';
-const CODEX_ORIGINATOR = 'codex_cli_rs';
-const CODEX_RESPONSES_HTTP_BETA = 'responses=experimental';
+// Align with CLIProxyAPI internal/runtime/executor/codex_executor.go defaults.
+const CODEX_USER_AGENT =
+  'codex-tui/0.135.0 (Mac OS 26.5.0; arm64) iTerm.app/3.6.10 (codex-tui; 0.135.0)';
+const CODEX_ORIGINATOR = 'codex-tui';
+// Align with CLIProxyAPI codex_websockets_executor.go.
 const CODEX_RESPONSES_WEBSOCKET_BETA = 'responses_websockets=2026-02-06';
 const CODEX_COMMON_REQUEST_FIELDS_TO_DELETE = [
   'user',
@@ -53,8 +51,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-function isResponsesClientEvent(value: unknown): value is ResponsesClientEvent {
-  return isRecord(value) && typeof value['type'] === 'string';
+function isResponsesClientEvent(
+  value: unknown,
+): value is OpenAIResponsesClientEvent {
+  return (
+    isRecord(value) &&
+    (value['type'] === 'response.create' ||
+      value['type'] === 'response.inject')
+  );
 }
 
 function deleteHeaderVariants(
@@ -189,8 +193,8 @@ function normalizeCodexRequestRecord(
 }
 
 function normalizeCodexWebSocketPayload(
-  payload: ResponsesClientEvent,
-): ResponsesClientEvent {
+  payload: OpenAIResponsesClientEvent,
+): OpenAIResponsesClientEvent {
   if (payload.type !== 'response.create') {
     return payload;
   }
@@ -234,22 +238,14 @@ function readStringHeader(
   return getHeaderValue(headers, name);
 }
 
-function setHeaderIfMissing(
-  headers: Record<string, string>,
-  name: string,
-  value: string,
-): void {
-  if (readStringHeader(headers, name) === undefined) {
-    headers[name] = value;
-  }
-}
-
-function resolveCodexUserAgent(authMethod: string | undefined): string {
-  return authMethod === 'openai-codex'
-    ? CODEX_CLI_USER_AGENT
-    : CODEX_TUI_USER_AGENT;
-}
-
+/**
+ * OpenAICodexProvider — ChatGPT Codex backend client.
+ *
+ * Request construction is aligned with CLIProxyAPI's reference implementation:
+ * - HTTP: applyCodexHeadersFromSources in codex_executor.go
+ * - WebSocket: applyCodexWebsocketHeaders in codex_websockets_executor.go
+ * - OAuth account identity headers only for openai-codex auth
+ */
 export class OpenAICodexProvider extends OpenAIResponsesProvider {
   protected override shouldEnableResponsesContextManagement(
     model: ModelConfig,
@@ -274,6 +270,7 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
   ): Record<string, string> {
     const headers = super.buildHeaders(sessionId, credential, modelConfig);
 
+    // Scrub non-Codex / proxy-fingerprint headers before applying CLIProxyAPI defaults.
     deleteHeaderVariants(headers, 'accept');
     deleteHeaderVariants(headers, 'connection');
     deleteHeaderVariants(headers, 'user-agent');
@@ -283,18 +280,23 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
     deleteHeaderVariants(headers, 'version');
     deleteHeaderVariants(headers, 'chatgpt-account-id');
     deleteHeaderVariants(headers, 'openai-beta');
+    deleteHeaderVariants(headers, 'x-codex-turn-metadata');
+    deleteHeaderVariants(headers, 'x-client-request-id');
 
-    headers['User-Agent'] = resolveCodexUserAgent(this.config.auth?.method);
+    // CLIProxyAPI defaults: codex-tui UA + Keep-Alive.
+    // Version / X-Codex-Turn-Metadata / X-Client-Request-Id are only forwarded
+    // when present (EnsureHeader with empty default), so do not invent values.
+    headers['User-Agent'] = CODEX_USER_AGENT;
+    headers['Connection'] = 'Keep-Alive';
+
+    // CLIProxyAPI sets Session_id when UA contains "Mac OS"; our default UA does.
+    // Conversation_id / Session_id also track prompt_cache_key for cache affinity.
     headers['Session_id'] = sessionId;
     headers['Conversation_id'] = sessionId;
-    headers['Version'] = CODEX_CLIENT_VERSION;
-    setHeaderIfMissing(headers, 'X-Codex-Turn-Metadata', '');
-    setHeaderIfMissing(headers, 'X-Client-Request-Id', '');
-    headers['Connection'] = 'Keep-Alive';
-    headers['OpenAI-Beta'] = CODEX_RESPONSES_HTTP_BETA;
 
     const auth = this.config.auth;
     if (auth?.method === 'openai-codex') {
+      // OAuth path: Originator + Chatgpt-Account-Id (not set for API-key auth).
       headers['Originator'] = CODEX_ORIGINATOR;
 
       const accountId = auth.accountId?.trim();
@@ -318,24 +320,25 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
       modelConfig,
       messages,
     );
+
+    // WebSocket upgrade must not send Connection: Keep-Alive from the HTTP path.
     deleteHeaderVariants(headers, 'connection');
+    // Optional Codex desktop headers are only forwarded when present upstream;
+    // do not invent empty values (matches CLIProxyAPI EnsureHeader semantics).
+    deleteHeaderVariants(headers, 'x-codex-beta-features');
+    deleteHeaderVariants(headers, 'x-codex-turn-state');
     deleteHeaderVariants(headers, 'x-codex-turn-metadata');
     deleteHeaderVariants(headers, 'x-client-request-id');
-    setHeaderIfMissing(headers, 'x-codex-beta-features', '');
-    setHeaderIfMissing(headers, 'x-codex-turn-state', '');
-    setHeaderIfMissing(headers, 'x-codex-turn-metadata', '');
-    setHeaderIfMissing(headers, 'x-client-request-id', '');
-    setHeaderIfMissing(headers, 'x-responsesapi-include-timing-metrics', '');
+    deleteHeaderVariants(headers, 'x-responsesapi-include-timing-metrics');
 
     const existingBeta = readStringHeader(headers, 'openai-beta');
-
     deleteHeaderVariants(headers, 'openai-beta');
     headers['OpenAI-Beta'] =
       existingBeta && existingBeta.includes('responses_websockets=')
         ? existingBeta
         : CODEX_RESPONSES_WEBSOCKET_BETA;
-    deleteHeaderVariants(headers, 'user-agent');
 
+    // Keep User-Agent / Originator / account headers from the HTTP builder.
     return headers;
   }
 
@@ -352,17 +355,20 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
   }
 
   protected override transformWebSocketRequestPayload(
-    payload: ResponsesClientEvent,
-  ): ResponsesClientEvent {
+    payload: OpenAIResponsesClientEvent,
+  ): OpenAIResponsesClientEvent {
     return normalizeCodexWebSocketPayload(payload);
   }
 
   protected override handleRequest(
     sessionId: string,
-    baseBody: ResponseCreateParamsBase,
+    baseBody: OpenAIResponsesRequestBody,
   ): void {
+    // Align body scrubbing with CLIProxyAPI CodexExecutor.Execute:
+    // drop previous_response_id / prompt_cache_retention / safety_identifier /
+    // stream_options and force store=false + prompt_cache_key for session affinity.
     normalizeCodexRequestRecord(baseBody as unknown as Record<string, unknown>, {
-      deletePreviousResponseId: false,
+      deletePreviousResponseId: true,
     });
     Object.assign(baseBody, {
       store: false,
@@ -433,6 +439,21 @@ export class OpenAICodexProvider extends OpenAIResponsesProvider {
     _credential: AuthTokenInfo,
   ): Promise<ModelConfig[]> {
     return [
+      {
+        id: 'gpt-5.6-sol',
+        maxInputTokens: 372000,
+        ...CODEX_REASONING_SUMMARY_DEFAULTS,
+      },
+      {
+        id: 'gpt-5.6-terra',
+        maxInputTokens: 372000,
+        ...CODEX_REASONING_SUMMARY_DEFAULTS,
+      },
+      {
+        id: 'gpt-5.6-luna',
+        maxInputTokens: 372000,
+        ...CODEX_REASONING_SUMMARY_DEFAULTS,
+      },
       {
         id: 'gpt-5.5',
         maxInputTokens: 272000,

@@ -1,5 +1,25 @@
 # Changelog
 
+## v7.12.3 - 2026-07-12
+
+### Features
+- codex: align OAuth and chat request construction with CLIProxyAPI (4f3a75c, SmallMain)
+
+## v7.12.2 - 2026-07-12
+
+### Features
+- xai: route OAuth HTTP requests through cli-chat-proxy and align headers with CLI (3ac6b77, SmallMain)
+
+## v7.12.1 - 2026-07-10
+
+### Fixes
+- pass 'max' effort through directly instead of mapping to 'xhigh' (3e6b574, SmallMain)
+
+## v7.12.0 - 2026-07-10
+
+### Features
+- add GPT-5.6 models, multi-agent support, and thinking mode/context config (6d1afd6, SmallMain)
+
 ## v7.11.0 - 2026-07-09
 
 ### Features
