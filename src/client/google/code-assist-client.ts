@@ -344,8 +344,7 @@ function hasWebSearchTool(tools: Tool[] | undefined): boolean {
       if (isWebSearchName(decl.name)) {
         return true;
       }
-      const record = decl as unknown as Record<string, unknown>;
-      return isWebSearchName(record['type']);
+      return isWebSearchName(Reflect.get(decl, 'type'));
     }) === true;
   });
 }
@@ -1462,19 +1461,20 @@ export abstract class GoogleCodeAssistProvider extends GoogleAIStudioProvider {
     return ordered;
   }
 
-  protected resolveProjectId(): string {
-    const auth = this.config.auth;
+  protected resolveProjectId(credential: AuthTokenInfo): string {
+    const context =
+      credential.kind === 'token' ? credential.authContext : undefined;
     if (
-      auth?.method === 'antigravity-oauth' ||
-      auth?.method === 'google-gemini-oauth'
+      context?.method === 'antigravity-oauth' ||
+      context?.method === 'google-gemini-oauth'
     ) {
-      const managedProjectId = auth.managedProjectId?.trim();
+      const managedProjectId = context.managedProjectId?.trim();
       if (managedProjectId) {
         return managedProjectId;
       }
 
-      if (auth.method === 'antigravity-oauth') {
-        const projectId = auth.projectId?.trim();
+      if (context.method === 'antigravity-oauth') {
+        const projectId = context.projectId?.trim();
         if (projectId) {
           return projectId;
         }
@@ -2051,7 +2051,7 @@ export abstract class GoogleCodeAssistProvider extends GoogleAIStudioProvider {
         CLAUDE_OPUS_MAX_OUTPUT_TOKENS_ANTIGRAVITY;
     }
 
-    const projectId = this.resolveProjectId();
+    const projectId = this.resolveProjectId(credential);
     const sessionId = isAntigravityImageRequest
       ? undefined
       : this.codeAssistHeaderStyle === 'antigravity'
