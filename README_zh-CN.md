@@ -160,11 +160,8 @@ Zed 编辑器使用自研的 Zeta 系列模型，这里推荐两种方式添加�
 
 1. 通过 [一键配置](#一键配置) 添加 `Zed` 供应商，使用你的 Zed 账号配额。
 2. 本地部署 Zeta 系列模型并添加。
-
-假设你已经通过第一种方式添加了 `Zed` 供应商，接下来的步骤是：
-
-1. 通过 `代码补全设置 -> 从当前供应商列表添加 -> Zed` 添加一个 Zed 算法，并选择 `Zeta Cloud` 模型。
-2. 点击 `保存` 按钮即可。
+3. 通过 `代码补全设置 -> 从当前供应商列表添加 -> Zed` 添加一个 Zed 算法，并选择刚刚添加的模型。
+4. 点击 `保存` 按钮即可。
 
 ### Inception
 
@@ -902,6 +899,7 @@ vscode://SmallMain.vscode-unify-chat-provider/import-config?config=<input>&auth=
 | [Xiaomi MIMO (欧洲站, Token Plan)](https://mimo.xiaomi.com/)                                  | <li>ThinkingParam <li>ReasoningContent                                               |                       |
 | [Ollama Local](https://ollama.com/)                                                           |                                                                                      |                       |
 | [Ollama Cloud](https://ollama.com/)                                                           |                                                                                      |                       |
+| [LM Studio Local](https://lmstudio.ai/)                                                           |                                                                                      |                       |
 | [阶跃星辰 (中国站)](https://platform.stepfun.com/)                                            | <li>ReasoningField                                                                   |                       |
 | [阶跃星辰 (国际站)](https://platform.stepfun.com/)                                            | <li>ReasoningField                                                                   |                       |
 | [智谱 AI](https://open.bigmodel.cn/)                                                          | <li>ThinkingParam <li>ReasoningEffortParam <li>ReasoningContent <li>ClearThinking    | [详情](#智谱-ai--zai) |
